@@ -1,4 +1,9 @@
-# JAMAL Aerodynamic Results Dashboard v25.6
+# JAMAL Aerodynamic Results Dashboard v25.6.1
+
+Network-share patch: report staging folders now use normal directory creation
+to inherit the destination folder's Windows permissions, instead of tempfile's
+restrictive ACL request. Report validation and rollback remain enabled. Existing
+folder permissions are not modified. Validation on the affected share is pending.
 
 ADF files are sufficient to load the dashboard. Run histories, load/Cp distributions
 and drag-rise inputs are optional. When FLUENT_LOG is absent, the newest `.trn`

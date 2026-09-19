@@ -1,4 +1,14 @@
-# Current update: v25.6 (2026-09-18)
+# Current update: v25.6.1 (2026-09-19)
+
+Network staging permission patch: replace TemporaryDirectory/mkdtemp (0o700)
+with a UUID-named sibling staging folder created by normal Path.mkdir (default
+0o777; parent ACL inheritance on Windows). No chmod or ACL changes are applied
+to the source, destination or existing files. Same-volume publication, validation
+and rollback are retained. Cleanup is constrained to the created output child;
+collisions never reuse/delete existing folders. All 34 tests pass, including
+creation mode, failure cleanup, collision safety and existing rollback tests.
+The real network-share failure has not been reproduced locally; user retest is
+required. A v25.6.1 real-environment ZIP accompanies this patch.
 
 Optional-input resilience: ADF files alone can generate a dashboard (02-RUNS is
 no longer required). Named FLUENT_LOG variants retain priority; otherwise use

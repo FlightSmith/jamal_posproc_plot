@@ -205,6 +205,34 @@ class DistributionTests(unittest.TestCase):
 
 
 class SafeguardTests(unittest.TestCase):
+    def test_staging_uses_normal_permissions_and_cleans_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            with patch.object(os, 'mkdir', wraps=os.mkdir) as mkdir:
+                with launcher._report_staging_directory(parent) as stage:
+                    self.assertEqual(stage.parent, parent)
+                    self.assertEqual(mkdir.call_args.args[1], 0o777)
+                    (stage/'dashboard.json').write_text('{}')
+                self.assertFalse(stage.exists())
+            with self.assertRaisesRegex(ValueError, 'writer failed'):
+                with launcher._report_staging_directory(parent) as failed:
+                    (failed/'partial').write_text('partial')
+                    raise ValueError('writer failed')
+            self.assertFalse(failed.exists())
+
+    def test_staging_collision_does_not_remove_existing_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            with patch.object(launcher.uuid, 'uuid4') as token:
+                token.return_value.hex = 'collision'
+                existing = parent/'.jamal_stage_collision'
+                existing.mkdir()
+                (existing/'keep.txt').write_text('keep')
+                with self.assertRaises(FileExistsError):
+                    with launcher._report_staging_directory(parent):
+                        self.fail('Existing folder must never be reused')
+                self.assertEqual((existing/'keep.txt').read_text(), 'keep')
+
     def test_exponent_reference_parser(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'infout'

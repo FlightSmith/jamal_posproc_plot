@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 
-APP_VERSION = "v25.6"
+APP_VERSION = "v25.6.1"
 ENGINE_FILENAME = "jamal_polar_convergence_dashboard_v25.py"
 MAX_CONFIGURATIONS = 5
 DEFAULT_OUTPUT_NAME = "dashboard"
@@ -533,8 +533,7 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         json_path = output_dir / "dashboard.json"
         html_path = output_dir / "dashboard.html"
         _set_job(job_id, percent=91, phase="Writing dashboard data", message=str(json_path))
-        with tempfile.TemporaryDirectory(prefix='.jamal_stage_', dir=output_dir) as stage_name:
-            stage = Path(stage_name)
+        with _report_staging_directory(output_dir) as stage:
             ENGINE.write_json(stage / json_path.name, summaries, conv_rows, history, adf_data, drag_rise_data, provenance, integrity_checks, distribution_data)
             _set_job(job_id, percent=96, phase="Writing standalone dashboard", message=str(html_path))
             ENGINE.write_html(stage / html_path.name, summaries, conv_rows, history, adf_data, drag_rise_data, provenance, integrity_checks, distribution_data)
@@ -577,6 +576,31 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         _job_log(job_id, traceback.format_exc())
         STATE["last_error"] = str(exc)
         _set_job(job_id, status="error", phase="Failed", message=str(exc), error=str(exc))
+
+
+@contextlib.contextmanager
+def _report_staging_directory(output_dir: Path):
+    """Use normal directory creation so Windows inherits the destination ACL.
+
+    tempfile.mkdtemp requests 0o700, which applies a restrictive Windows ACL.
+    Keep staging on the destination filesystem for same-volume replacements.
+    """
+    parent = output_dir.resolve()
+    stage = parent / f'.jamal_stage_{uuid.uuid4().hex}'
+    # Default 0o777 is ignored on Windows: normal parent ACL inheritance applies.
+    # On POSIX the process umask and any parent default ACL still apply.
+    stage.mkdir(exist_ok=False)
+    try:
+        yield stage
+    finally:
+        # Never recursively remove a substituted link or a path outside this output.
+        try:
+            if stage.is_symlink() or stage.resolve().parent != parent:
+                print(f'WARNING: staging path changed; cleanup skipped: {stage}')
+            elif stage.exists():
+                shutil.rmtree(stage)
+        except OSError as error:
+            print(f'WARNING: could not clean staging folder {stage}: {error}')
 
 
 def _publish_report_pair(stage: Path, output_dir: Path) -> None:
