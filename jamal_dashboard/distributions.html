@@ -21,12 +21,14 @@
     <p id="distReference" class="small"></p>
   </div>
   <div class="card"><button id="distExport">Save spanwise loads (.txt)</button><span id="distExportStatus" role="status" aria-live="polite"></span><p class="small">Exports cl and cl.c at every station of the displayed states and overlays, including chord, BREF, alpha and beta.</p></div>
+  <div class="workspace-context" id="distributionConditions"></div>
   <div class="analysis-plot-grid">
   <div class="card"><h3>Spanwise cl</h3><div id="distSpanPlot" class="plot"></div></div>
   <div class="card"><h3>Spanwise cl.c</h3><div id="distSpanChordPlot" class="plot"></div></div>
   </div>
   <div class="card">
     <h3>Chordwise pressure</h3>
+    <div class="workspace-context" id="cpConditions"></div>
     <div class="toolbar-row">
       <button id="distAll">Select all stations</button><button id="distNone">Clear stations</button>
       <label for="distNth">Every nth station</label><input id="distNth" type="number" min="1" value="2" style="width:65px">
@@ -46,5 +48,5 @@
 .dist-cp-panel .plot {width:100%;min-width:0;}
 /* Plotly replaces fully transparent hover backgrounds with its dark fallback.
    Override only the Cp tooltip shape; retain the trace-colored text. */
-#distCpGrid .hoverlayer .hovertext > path {fill:none !important;stroke:none !important;}
+#distCpGrid .hoverlayer .hovertext > path, #plotDialog.cp-expanded .hoverlayer .hovertext > path {fill:none !important;stroke:none !important;}
 </style>

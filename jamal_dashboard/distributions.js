@@ -145,10 +145,13 @@ function distributionLoadsText(series, mode) {
       return {title,height:360+bottom,margin:{l:65,r:25,t:55,b:bottom},uirevision:'distributions',
         showlegend:true,legend:{orientation:'h',y:-.28,yanchor:'top',x:0,entrywidth:260}, font:{family:'Arial, Helvetica, sans-serif'}};
     };
-    Plotly.react('distSpanPlot', span, mixedTypographyLayout({...layout('distSpanPlot','Sectional cl',span.length),
+    byId('distributionConditions').textContent=panelConditions(series.map(s=>({rows:[{MACH:s.mach,REYNOLDS:s.reynolds}]})));
+    byId('cpConditions').textContent=byId('distributionConditions').textContent;
+    ['distSpanPlot','distSpanChordPlot'].forEach(id=>installPlotActions(byId(id)));
+    Plotly.react('distSpanPlot', span, mixedTypographyLayout({...layout('distSpanPlot','',span.length),
       xaxis:{title:mode==='eta'?'2Y/BREF':mode==='yb'?'Y/BREF':'Y [m]'},yaxis:{title:'cl'},uirevision:mode}), {responsive:true});
-    Plotly.react('distSpanChordPlot', chordSpan, mixedTypographyLayout({...layout('distSpanChordPlot','Sectional cl.c',chordSpan.length),
-      xaxis:{title:mode==='eta'?'2Y/BREF':mode==='yb'?'Y/BREF':'Y [m]'},yaxis:{title:'cl.c [m]'},uirevision:mode}), {responsive:true});
+    Plotly.react('distSpanChordPlot', chordSpan, mixedTypographyLayout({...layout('distSpanChordPlot','',chordSpan.length),
+      xaxis:{title:mode==='eta'?'2Y/BREF':mode==='yb'?'Y/BREF':'Y [m]'},yaxis:{title:'cl.c'},uirevision:mode}), {responsive:true});
     byId('distExport').disabled = !series.some(s=>s.span.length);
     // Reuse one Plotly surface per station; release removed panels and their listeners.
     for(const [key,panel] of panels) if(!groups.has(key)) {
@@ -163,11 +166,13 @@ function distributionLoadsText(series, mode) {
       let panel=panels.get(g.key);
       if(!panel){
         const card=document.createElement('article'), heading=document.createElement('h4'), plot=document.createElement('div');
-        card.className='dist-cp-panel';plot.className='plot';card.append(heading,plot);
+        card.className='dist-cp-panel';plot.className='plot';plot.id='distCpPlot_'+encodeURIComponent(g.key);card.append(heading,plot);
         panel={card,heading,plot};panels.set(g.key,panel);
       }
       panel.heading.textContent=g.label;
       byId('distCpGrid').append(panel.card);
+      installPlotActions(panel.plot);
+      panel.card.querySelector('.plot-actions button').setAttribute('aria-label','Expand '+g.label);
     });
     // Finalize every grid cell before Plotly measures any panel. Otherwise the
     // first airfoil's equal-scale constraint uses a temporary full-grid width.

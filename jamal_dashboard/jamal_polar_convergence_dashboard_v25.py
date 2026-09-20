@@ -34,7 +34,7 @@ import csv
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
@@ -121,7 +121,7 @@ FLUENT_LOG_NAMES = [
 ]
 
 # Module versions shown in the dashboard and JSON output.
-SCRIPT_VERSION = "v25.6.1"
+SCRIPT_VERSION = "v25.8.1"
 MODULE_VERSIONS = {
     "infout parser": "1.3",
     "Distributions": jamal_distributions.VERSION,
@@ -207,6 +207,7 @@ class CaseConfig:
     # Optional. If provided, the script reads drag-rise files from:
     #   <CFD>/03-RESULTS/DRAG-RISE/<drag_rise_dir>/drag_rise_cl*.dat
     drag_rise_dir: Optional[str] = None
+    drag_rise_dirs: Optional[List[str]] = None
 
 
 @dataclass
@@ -322,6 +323,7 @@ def normalize_cases(raw_cases: Sequence[Dict]) -> List[CaseConfig]:
             directory=Path(item["directory"]).expanduser(),
             polars=[int(p) for p in item["polars"]],
             drag_rise_dir=item.get("drag_rise_dir"),
+            drag_rise_dirs=item.get("drag_rise_dirs"),
         )
         for item in raw_cases
     ]
@@ -534,6 +536,8 @@ def load_drag_rise_data(cases: Sequence[CaseConfig]) -> Dict:
         <CFD>/03-RESULTS/DRAG-RISE/<folder_name>/drag_rise_cl*.dat
     """
     curves = []
+    cases = [replace(case, drag_rise_dir=folder) for case in cases
+             for folder in (case.drag_rise_dirs if case.drag_rise_dirs is not None else [case.drag_rise_dir]) if folder]
     for case in cases:
         if not case.drag_rise_dir:
             continue
@@ -862,11 +866,12 @@ def final_window_statistics(rows, column):
     }
 
 
-def block_metrics(rows):
+def block_metrics(rows, residual_columns=None):
+    residual_columns = RESIDUAL_COLUMNS if residual_columns is None else residual_columns
     n = len(rows)
     if n == 0:
         base = {"has_history": False, "actual_iters": 0}
-        for col in RESIDUAL_COLUMNS:
+        for col in residual_columns:
             base[f"{col}_final"] = None
             base[f"{col}_p95"] = None
         return base
@@ -875,9 +880,9 @@ def block_metrics(rows):
     final_window = rows[-window_size:]
     final = rows[-1]
 
-    residual_final_values = {col: abs(final[col]) for col in RESIDUAL_COLUMNS if col in final and final[col] is not None}
+    residual_final_values = {col: abs(final[col]) for col in residual_columns if col in final and final[col] is not None}
     residual_window_p95 = {}
-    for col in RESIDUAL_COLUMNS:
+    for col in residual_columns:
         vals = [abs(v) for v in column_values(final_window, col)]
         residual_window_p95[col] = percentile(vals, 95)
 
@@ -908,8 +913,8 @@ def block_metrics(rows):
     if n >= 40:
         early = rows[-40:-20]
         late = rows[-20:]
-        early_max = max(max(abs(r[col]) for col in RESIDUAL_COLUMNS) for r in early)
-        late_max = max(max(abs(r[col]) for col in RESIDUAL_COLUMNS) for r in late)
+        early_max = max(max(abs(r[col]) for col in residual_columns if r.get(col) is not None) for r in early)
+        late_max = max(max(abs(r[col]) for col in residual_columns if r.get(col) is not None) for r in late)
         if early_max > 0:
             residual_trend_ratio = late_max / early_max
 
@@ -968,7 +973,7 @@ def block_metrics(rows):
         "cpmax_drift_per_100": final_window_stats["cpmax"]["drift_per_100"],
     }
 
-    for col in RESIDUAL_COLUMNS:
+    for col in residual_columns:
         metrics[f"{col}_final"] = abs(final.get(col)) if final.get(col) is not None else None
         metrics[f"{col}_p95"] = residual_window_p95.get(col)
 
@@ -1191,6 +1196,41 @@ def add_neighbor_consistency(rows):
 # POLAR CONVERGENCE PROCESSING
 # =============================================================================
 
+def parse_fluent_log_named_columns(log_path):
+    """Retain the validated parser for legacy headers; map other models by name."""
+    result = parse_fluent_log_all_rows(log_path)
+    lines = log_path.read_text(errors='ignore').splitlines()
+    headers = [line.lower().split() for line in lines
+               if line.lower().split()[:1] == ['iter'] and 'continuity' in line.lower().split()]
+    if not headers or all(header == HISTORY_COLUMNS for header in headers):
+        result['residual_columns'] = RESIDUAL_COLUMNS
+        return result
+    monitors = set(HISTORY_COLUMNS) - set(RESIDUAL_COLUMNS) - {'iter'}
+    fields, rows, residuals = None, [], []
+    for line in lines:
+        tokens = line.lower().split()
+        if tokens[:1] == ['iter'] and 'continuity' in tokens:
+            fields = tokens
+            # Fluent lists residual equations before monitor columns.
+            boundary = next((i for i, name in enumerate(fields) if name in monitors), len(fields))
+            residuals.extend(name for name in fields[1:boundary] if name not in residuals)
+            continue
+        if not fields or not re.match(r'^\s*\d+\s', line):
+            continue
+        values = numeric_tokens(line)
+        if len(values) < len(fields):
+            continue
+        mapped = {name: safe_float(value) for name, value in zip(fields, values)}
+        if any(value is None for value in mapped.values()):
+            continue
+        rows.append(mapped)
+    result['all_rows'] = rows
+    result['residual_columns'] = residuals
+    result['diagnostics'].update(history_headers_found=len(headers), history_rows_found=len(rows),
+                                 first_header_line=' '.join(headers[0]), header_mapped=True)
+    return result
+
+
 def process_polar_convergence(case_label, polar_name, polar_path):
     infout_path = polar_path / "infout"
     log_path = find_fluent_log(polar_path)
@@ -1201,7 +1241,7 @@ def process_polar_convergence(case_label, polar_name, polar_path):
         raise FileNotFoundError(f"Missing FLUENT_LOG: {log_path}")
 
     infout = parse_infout(infout_path)
-    log = parse_fluent_log_all_rows(log_path)
+    log = parse_fluent_log_named_columns(log_path)
     cases = infout["cases"]
     blocks, split_diag = split_history_rows_by_infout(log["all_rows"], cases)
 
@@ -1220,7 +1260,9 @@ def process_polar_convergence(case_label, polar_name, polar_path):
 
     for i, case in enumerate(cases):
         hist_rows = blocks[i] if i < len(blocks) else []
-        metrics = block_metrics(hist_rows)
+        metrics = block_metrics(hist_rows, log.get('residual_columns'))
+        metrics['residual_columns'] = log.get('residual_columns', RESIDUAL_COLUMNS)
+        metrics['tstep_ave_final'] = hist_rows[-1].get('tstep-ave') if hist_rows else None
         assessment = classify_case(case, metrics)
 
         row = {}
@@ -1291,6 +1333,7 @@ def build_provenance(case_configs, summaries, adf_data, drag_rise_data):
                 "adf_directory": str(cfg.directory),
                 "polars": [polar_name_from_number(p) for p in cfg.polars],
                 "drag_rise_dir": cfg.drag_rise_dir,
+                "drag_rise_dirs": cfg.drag_rise_dirs,
             }
             for cfg in case_configs
         ],
@@ -1792,6 +1835,10 @@ body.density-presentation th, body.density-presentation td {{ padding: 9px; font
 <section id="section-static-margin" class="dashboard-section">
 <div class="card">
   <h2>Static margin analysis</h2>
+  <label for="staticMarginMode">Static margin:</label>
+  <select id="staticMarginMode"><option value="longitudinal">Longitudinal · −dCM/dCL</option><option value="directional">Directional · −dCN/dCY</option></select>
+  <p class="small" id="staticMarginDefinition"></p>
+  <p class="small" id="staticMarginStatus" role="status"></p>
   <p class="small">The active moment reference is controlled in the Coefficients tab. Static-margin plots update automatically when that reference changes.</p>
   <button onclick="showSection('aero', document.querySelector('#dashboardNav button[data-section=&quot;aero&quot;]'));document.getElementById('referencePanel').open=true;document.getElementById('referencePanel').scrollIntoView({{block:'center'}})">Open moment-reference controls</button>
 </div>
@@ -1804,7 +1851,7 @@ body.density-presentation th, body.density-presentation td {{ padding: 9px; font
 <section id="section-comparison" class="dashboard-section">
 <div class="card">
   <h2>Delta comparisons</h2>
-  <p class="small">Difference is Comparison − Reference, interpolated onto the reference curve's selected coordinate without extrapolation. Repeated coordinates are averaged. Static margin retains its stability-axis definition; its horizontal coordinate follows your selection.</p>
+  <p class="small">Difference is Comparison − Reference, interpolated onto the reference curve's selected coordinate without extrapolation. Repeated coordinates are averaged. The optional static-margin comparison remains longitudinal in Stability axes; its horizontal coordinate follows your selection.</p>
   <div class="controls">
     <label for="deltaAxis">Axis system:</label><select id="deltaAxis" onchange="drawComparisonPlot();saveLastState();"><option value="W">Wind</option><option value="S" selected>Stability</option><option value="B">Body</option></select>
     <label for="deltaAbscissa">Plot against:</label><select id="deltaAbscissa" onchange="drawComparisonPlot();saveLastState();"><option>ALPHA</option><option>BETA</option><option>CL</option><option>CY</option></select>
@@ -1954,10 +2001,11 @@ const NUMBER_FONT = 'Arial, Helvetica, sans-serif';
 const hiddenCoefficientCurves = new Set();
 
 function installPlotActions(element) {{
-  if(!element?.matches('.dashboard-section .plot')||element.closest('#section-distributions')||element.dataset.actionsReady) return;
+  const cpPanel=element?.closest('.dist-cp-panel');
+  if(!element?.matches('.dashboard-section .plot')||(element.closest('#section-distributions')&&!cpPanel&&!['distSpanPlot','distSpanChordPlot'].includes(element.id))||element.dataset.actionsReady) return;
   element.dataset.actionsReady='true';
   const actions=document.createElement('div');actions.className='plot-actions';
-  ['Expand','PNG','SVG'].forEach(label=>{{
+  (cpPanel?['Expand']:['Expand','PNG','SVG']).forEach(label=>{{
     const button=document.createElement('button');button.textContent=label;
     button.setAttribute('aria-label',`${{label}} ${{element.id}}`);
     button.onclick=()=>{{
@@ -1968,8 +2016,20 @@ function installPlotActions(element) {{
         Plotly.relayout(element,{{showlegend:true}}).then(()=>Plotly.downloadImage(element,{{format:label.toLowerCase(),filename:`JAMAL_${{element.id}}`,width:1400,height:900}})).finally(()=>Plotly.relayout(element,{{showlegend:previous}}));return;
       }}
       const dialog=document.getElementById('plotDialog');
-      document.getElementById('expandedPlotTitle').textContent=element.layout.yaxis?.title?.text||element.id;
+      dialog.classList.toggle('cp-expanded',Boolean(cpPanel));
+      document.getElementById('expandedPlotTitle').textContent=(cpPanel?.querySelector('h4')?.textContent||element.layout.yaxis?.title?.text||element.id).replaceAll('<b>','').replaceAll('</b>','');
       dialog.showModal();delete layout.width;delete layout.height;layout.autosize=true;
+      if(cpPanel&&element.data.some(t=>t.yaxis==='y2')) {{
+        const expanded=document.getElementById('expandedPlot');
+        const foil=element.data.filter(t=>t.yaxis==='y2');
+        const xs=foil.flatMap(t=>t.x).filter(Number.isFinite),ys=foil.flatMap(t=>t.y).filter(Number.isFinite);
+        const chord=Math.max(...xs)-Math.min(...xs);
+        const innerHeight=expanded.clientHeight-layout.margin.t-layout.margin.b;
+        const innerWidth=expanded.clientWidth-layout.margin.l-layout.margin.r;
+        const foilFraction=Math.min(.65,Math.max(66,innerWidth*(Math.max(...ys)-Math.min(...ys))/chord*1.25)/innerHeight);
+        layout.yaxis2.domain=[0,foilFraction];layout.yaxis2.autorange=true;
+        layout.yaxis.domain=[foilFraction+25/innerHeight,1];
+      }}
       Plotly.newPlot('expandedPlot',JSON.parse(JSON.stringify(element.data)),layout,{{responsive:true}});
     }};
     actions.appendChild(button);
@@ -3498,6 +3558,7 @@ applyState=function(s){{if(s){{
   ["deltaAxis","dragRiseAxis"].forEach(id=>document.getElementById(id).value=["W","S","B"].includes(s[id])?s[id]:"S");
 }}return applyStateBeforeAbscissa(s);}};
 
+{Path(__file__).with_name('dashboard_panels.js').read_text(encoding='utf-8')}
 setupPlotFirstWorkspace();
 setupComparisonControls();populateExportPlots();refreshPresetSelect();drawIntegrity();drawProvenance();
 const lastState=storageGet("JAMAL_v24_last_state",null);

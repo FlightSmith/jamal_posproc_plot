@@ -124,6 +124,49 @@ class DistributionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 dist.parse_curve(path)
 
+    def test_alternate_turbulence_headers_preserve_monitor_alignment(self):
+        path=self.base/'02-RUNS/POLAR-001/FLUENT_LOG'
+        original=engine.parse_fluent_log_all_rows(path)
+        lines=[]
+        for line in path.read_text(encoding='utf-8').splitlines():
+            if engine.is_history_header(line):
+                line=line.replace('nut', 'k omega')
+            elif engine.parse_history_row(line) is not None:
+                fields=line.split()
+                fields[6:7]=['1e-6','2e-6']
+                line=' '.join(fields)
+            lines.append(line)
+        path.write_text('\n'.join(lines),encoding='utf-8')
+        parsed=engine.parse_fluent_log_named_columns(path)
+        self.assertEqual(len(parsed['all_rows']),len(original['all_rows']))
+        self.assertEqual(parsed['residual_columns'],['continuity','x-velocity','y-velocity','z-velocity','energy','k','omega'])
+        for before,after in zip(original['all_rows'],parsed['all_rows']):
+            for name in ('clzb','cdxb','cmyb','cp-max','tstep-ave'):
+                self.assertEqual(before[name],after[name])
+        with contextlib.redirect_stdout(io.StringIO()):
+            summary,rows,history=engine.process_polar_convergence('Test','POLAR-001',path.parent)
+        self.assertEqual(rows[0]['k_final'],1e-6)
+        self.assertEqual(rows[0]['omega_final'],2e-6)
+        self.assertEqual(rows[0]['tstep_ave_final'],original['all_rows'][239]['tstep-ave'])
+
+    def test_multiple_drag_folders_share_numeric_targets_and_cache(self):
+        root=self.base/'03-RESULTS/DRAG-RISE'
+        expected_targets={engine.parse_drag_rise_cls_from_filename(p)[1] for p in (root/'BASELINE').glob('drag_rise_*.dat')}
+        expected_count=2*len(expected_targets)
+        shutil.copytree(root/'BASELINE',root/'W200B100V100')
+        self.payload['configurations'][0]['drag_rise_dirs']=['BASELINE','W200B100V100']
+        with contextlib.redirect_stdout(io.StringIO()):
+            launcher._run_generation_job('multi-drag',self.payload)
+        self.assertEqual(launcher.job_snapshot('multi-drag')['status'],'complete')
+        report=json.loads((self.base/'03-RESULTS/DASHBOARD/dashboard.json').read_text())
+        curves=report['drag_rise']['curves']
+        self.assertEqual(len(curves),expected_count)
+        self.assertEqual({c['drag_rise_dir'] for c in curves},{'BASELINE','W200B100V100'})
+        self.assertEqual({c['cls_value'] for c in curves},expected_targets)
+        with contextlib.redirect_stdout(io.StringIO()):
+            launcher._run_generation_job('multi-drag-reuse',self.payload)
+        self.assertEqual(launcher.job_snapshot('multi-drag-reuse')['result']['drag_rise']['cached'],expected_count)
+
     def test_latest_transcript_fallback_and_log_priority(self):
         run = self.base / '02-RUNS/POLAR-001'
         log = engine.find_fluent_log(run)
@@ -187,7 +230,7 @@ class DistributionTests(unittest.TestCase):
         report = json.loads((output/'dashboard.json').read_text())
         self.assertEqual([r['actual_iters'] for r in report['results']], [240]*10)
         self.assertEqual(len(report['distributions']['series']), 10)
-        self.assertEqual(len(report['drag_rise']['curves']), 2)
+        self.assertEqual(len(report['drag_rise']['curves']), len(list((self.base/'03-RESULTS/DRAG-RISE/BASELINE').glob('drag_rise_*.dat'))))
         for row in report['adf']['static_margin']:
             self.assertAlmostEqual(row['STATIC_MARGIN_PERCENT'], 10, places=6)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

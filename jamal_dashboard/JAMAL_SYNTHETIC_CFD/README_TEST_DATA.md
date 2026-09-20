@@ -2,6 +2,10 @@
 
 Entirely synthetic parser/dashboard fixtures, patterned on the infout, Fluent monitor, drag-rise and LS-DYNA curve examples in the referenced CFD plotter conversation. No production CFD data, proprietary geometry, mesh, solver restart, or real simulation results are included.
 
+POLAR-003 adds an analytical beta sweep for directional static margin. See
+[README_DIRECTIONAL.md](README_DIRECTIONAL.md). It has ADF and infout only; the
+original two polars below retain their load/Cp and convergence fixtures.
+
 ## Getting started
 
 Extract the ZIP and select **JAMAL_SYNTHETIC_CFD** as the JAMAL base folder. Select POLAR-001 and POLAR-002. For drag rise, select **03-RESULTS/DRAG-RISE/BASELINE**. For distributions, select either POLAR, component WING, and states 1 through 5.
@@ -173,4 +177,4 @@ The baseline CDS values are 0.0196 and 0.0280; final values are 0.04382 and 0.05
 5. Geometry discovery finds WING under either POLAR, and only state1 supplies geometry. Station selectors expose nine stations including negative values.
 6. Use a disposable copy for missing-force, missing-geometry, altered-chord or missing-state fault injection. The shipped fixture is complete; no missing-file warning is expected for selected root POLARs.
 
-There is one configuration, two ALPHA sweeps, and one component. Nonzero-BETA frame rotation, multiple-configuration Delta plots, VTAIL geometry, reversed geometric X direction, and malformed-file recovery are outside this fixture's coverage. SHA256SUMS.txt covers all packaged files except itself.
+The original fixture contains two ALPHA sweeps and WING distributions. README_VTAIL.md and README_DIRECTIONAL.md document the additional VTAIL and beta-sweep fixtures. Reversed geometric X direction and malformed-file recovery require separate fault-injection tests. SHA256SUMS.txt and VTAIL_SHA256SUMS.txt track the supplied validation files; user-added drag-rise files are separate.

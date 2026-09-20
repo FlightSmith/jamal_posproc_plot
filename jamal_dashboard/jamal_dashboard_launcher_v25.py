@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 
-APP_VERSION = "v25.6.1"
+APP_VERSION = "v25.8.1"
 ENGINE_FILENAME = "jamal_polar_convergence_dashboard_v25.py"
 MAX_CONFIGURATIONS = 5
 DEFAULT_OUTPUT_NAME = "dashboard"
@@ -336,9 +336,12 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         adf_dir = base_dir / "03-RESULTS" / "ADF"
         runs_dir = base_dir / "02-RUNS"
         polars = sorted({int(value) for value in (cfg.get("polars") or [])})
-        folder = cfg.get("drag_rise_dir")
-        if folder and (Path(str(folder)).name != str(folder) or str(folder) in {'.', '..'}):
-            raise ValueError(f"{label}: select a first-level drag-rise folder name.")
+        folders = cfg.get('drag_rise_dirs')
+        if folders is None:
+            folders = [cfg['drag_rise_dir']] if cfg.get('drag_rise_dir') else []
+        if not isinstance(folders, list) or any(not isinstance(folder, str) or not folder or Path(folder).name != folder or '/' in folder or '\\' in folder or folder in {'.', '..'} for folder in folders):
+            raise ValueError(f"{label}: select first-level drag-rise folder names.")
+        folders = list(dict.fromkeys(folders))
         if not polars:
             raise ValueError(f"{label}: select at least one POLAR.")
         normalized.append({
@@ -347,7 +350,8 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             "adf_directory": str(adf_dir),
             "runs_directory": str(runs_dir),
             "polars": polars,
-            "drag_rise_dir": cfg.get("drag_rise_dir") or None,
+            "drag_rise_dir": folders[0] if folders else None,
+            "drag_rise_dirs": folders,
         })
     return normalized
 
@@ -406,6 +410,8 @@ def _build_update_plan(normalized: List[Dict[str, Any]], cache_dir: Path, force:
 
 
 def _drag_rise_incremental(normalized: List[Dict[str, Any]], cache_dir: Path, force: bool, job_id: str) -> tuple[Dict[str, Any], Dict[str, int]]:
+    normalized = [dict(cfg, drag_rise_dir=folder) for cfg in normalized
+                  for folder in cfg.get('drag_rise_dirs', [cfg.get('drag_rise_dir')]) if folder]
     curves: List[Dict[str, Any]] = []
     counts = {"new": 0, "modified": 0, "cached": 0}
     cache_root = cache_dir / "drag_rise"
@@ -522,7 +528,7 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         adf_data = ENGINE.make_adf_plot_rows(adf_polars, sm_df)
         conv_rows = ENGINE.attach_adf_coefficients_to_convergence(conv_rows, adf_data)
         conv_rows = ENGINE.add_neighbor_consistency(conv_rows)
-        case_configs = [ENGINE.CaseConfig(label=cfg["label"], directory=Path(cfg["adf_directory"]), polars=cfg["polars"], drag_rise_dir=cfg.get("drag_rise_dir")) for cfg in normalized]
+        case_configs = [ENGINE.CaseConfig(label=cfg["label"], directory=Path(cfg["adf_directory"]), polars=cfg["polars"], drag_rise_dir=cfg.get("drag_rise_dir"), drag_rise_dirs=cfg.get('drag_rise_dirs')) for cfg in normalized]
         provenance = ENGINE.build_provenance(case_configs, summaries, adf_data, drag_rise_data)
         integrity_checks = ENGINE.build_integrity_checks(case_configs, summaries, conv_rows, adf_data, drag_rise_data)
         if distribution_data['issues']:
@@ -811,7 +817,7 @@ function configCard(id, data={}) {
       <div class="polar-toolbar"><strong>Available POLARs</strong><button onclick="setAllPolars(${id},true)">Select all</button><button onclick="setAllPolars(${id},false)">Clear</button><span id="count-${id}"></span></div>
       <div class="polar-list" id="polars-${id}"></div>
       <div class="options-row">
-        <div class="field"><label>Optional drag-rise directory</label><select id="drag-${id}"><option value="">None</option></select></div>
+        <div class="field"><label>Optional drag-rise folders (Ctrl-click to select several)</label><select id="drag-${id}" multiple size="4"></select></div>
         <div class="field"><label>Scan summary</label><div id="summary-${id}" class="meta-item"></div></div>
       </div>
     </div>
@@ -822,7 +828,7 @@ function addConfiguration(data={}) {
   const id = nextId++;
   configs.set(id, {scan:null});
   document.getElementById('configs').insertAdjacentHTML('beforeend', configCard(id,data));
-  if (data.base_directory || data.directory) scanDirectory(id, data.polars || null, data.drag_rise_dir || '');
+  if (data.base_directory || data.directory) scanDirectory(id, data.polars || null, data.drag_rise_dirs || (data.drag_rise_dir ? [data.drag_rise_dir] : []));
   persistDraft();
 }
 function removeConfiguration(id) {
@@ -860,8 +866,9 @@ async function scanDirectory(id, restorePolars=null, restoreDrag='') {
       return `<label class="polar-option"><input type="checkbox" class="polar-check-${id}" value="${p.number}" ${wanted.has(p.number)?'checked':''} onchange="updateCount(${id})"><strong>${p.name}</strong></label>`;
     }).join('') || '<div>No POLAR-XXX.adf files found directly inside 03-RESULTS/ADF.</div>';
     const drag=document.getElementById(`drag-${id}`);
-    drag.innerHTML='<option value="">None</option>'+data.drag_rise_directories.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
-    if (restoreDrag && data.drag_rise_directories.includes(restoreDrag)) drag.value=restoreDrag;
+    drag.innerHTML=data.drag_rise_directories.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    const wantedDrag = new Set(Array.isArray(restoreDrag)?restoreDrag:restoreDrag?[restoreDrag]:[]);
+    Array.from(drag.options).forEach(option=>option.selected=wantedDrag.has(option.value));
     document.getElementById(`summary-${id}`).textContent=`Fast discovery: ${data.polars.length} root ADF POLAR files · ${data.drag_rise_directories.length} drag-rise folders · 02-RUNS checked only during generation`;
     updateCount(id); setStatus(`Phase 1 complete: ${data.polars.length} POLAR files found in ${data.adf_directory}. No recursive scan and no run validation performed.`); persistDraft();
   } catch (error) { setStatus(`Scan error: ${error.message}`); }
@@ -871,7 +878,7 @@ function selectedPolars(id) { return [...document.querySelectorAll(`.polar-check
 function updateCount(id) { const n=selectedPolars(id).length; document.getElementById(`count-${id}`).textContent=`${n} selected`; persistDraft(); }
 function serializeSetup() {
   return {version:'v25',configurations:[...configs.keys()].map(id=>({
-    label:document.getElementById(`label-${id}`).value.trim(),base_directory:document.getElementById(`path-${id}`).value.trim(),polars:selectedPolars(id),drag_rise_dir:document.getElementById(`drag-${id}`)?.value||''
+    label:document.getElementById(`label-${id}`).value.trim(),base_directory:document.getElementById(`path-${id}`).value.trim(),polars:selectedPolars(id),drag_rise_dirs:Array.from(document.getElementById(`drag-${id}`)?.selectedOptions||[]).map(option=>option.value)
   }))};
 }
 function saveSetup() {

@@ -32,8 +32,8 @@ def curve(path):
 
 expected=json.loads((BASE/'expected_values.json').read_text())
 adf=BASE/'03-RESULTS/ADF'
-check(sorted(p.stem for p in adf.glob('POLAR-*.adf'))==['POLAR-001','POLAR-002'],'shallow discovery')
-check(len(list(adf.rglob('POLAR-*.adf')))==3,'nested decoy exists')
+check(sorted(p.stem for p in adf.glob('POLAR-*.adf'))==['POLAR-001','POLAR-002','POLAR-003'],'shallow discovery')
+check(len(list(adf.rglob('POLAR-*.adf')))==4,'nested decoy exists')
 for polar,pe in expected['polars'].items():
     run=BASE/'02-RUNS'/polar
     info=(run/'infout').read_text()
@@ -107,4 +107,14 @@ for name,entries in expected['drag_rise'].items():
     for r,e in zip(rows,entries):
         near(r['CLS'],entries[0]['CLS'],'constant CLS')
         near(r['CDS']-rows[0]['CDS'],e['Delta_CD'],'drag rise')
-print(f'PASS: {checks} checks; 2 POLARs, 10 states, 18 geometry curves, 90 Cp curves, 10 force tables, 2 drag-rise sweeps.')
+directional=json.loads((BASE/'expected_directional_values.json').read_text(encoding='utf-8'))
+beta_rows=table(adf/'POLAR-003.adf')
+check(len(beta_rows)==len(directional['betas']),'beta sweep row count')
+for row,beta in zip(beta_rows,directional['betas']):
+    near(row['ALPHA'],directional['alpha'],'constant alpha')
+    near(row['BETA'],beta,'beta sweep coordinate')
+    near(row['CYS'],directional['dCYS_dBeta_rad']*math.radians(beta),'synthetic CY slope')
+    near(row['CNS25'],directional['dCNS_dBeta_rad']*math.radians(beta),'synthetic CN slope')
+for a,b in zip(beta_rows,beta_rows[1:]):
+    near(-100*(b['CNS25']-a['CNS25'])/(b['CYS']-a['CYS']),directional['directional_static_margin_percent_bref'],'signed directional margin')
+print(f'PASS: {checks} checks; 3 POLARs including analytical beta sweep; original WING/drag fixtures preserved.')

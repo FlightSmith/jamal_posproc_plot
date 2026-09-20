@@ -1,4 +1,29 @@
-# JAMAL Aerodynamic Results Dashboard v25.6.1
+# JAMAL Aerodynamic Results Dashboard v25.8.1
+
+New in v25.8: Cp station cards include Expand, preserving the section outline and
+transparent hover labels. Distribution headings show only Re/Mach. Drag-rise
+Re/Mach appears once above all targets. Delta shows the sweep's constant angle,
+with Xref between the force and moment rows.
+
+Static margin now offers Longitudinal (-100 dCMS/dCLS, % CREF) or Directional
+(-100 dCNS/dCYS, % BREF), both in Stability axes using the active moment reference.
+Select synthetic POLAR-003 to check the directional option: alpha is fixed at 3°,
+beta sweeps from -8° to +8°, and the signed result is +15% BREF at the original
+reference. Three finite distinct CY values and constant alpha are required.
+See JAMAL_SYNTHETIC_CFD/README_DIRECTIONAL.md for formulas and reproduction.
+The Delta tab's optional static-margin comparison remains longitudinal.
+
+New in v25.7: Convergence shows each residual equation in a three-column grid
+against ALPHA or BETA, with cp-max and tstep-ave below on independent axes.
+Additional turbulence equations are discovered from Fluent headers. Delta shows
+all six coefficient comparisons and collapsible additional plots. In the launcher,
+Ctrl-click multiple drag-rise folders to overlay configurations at each filename
+CL target; targets appear in rows of three. Existing single-folder setups still work.
+Spanwise cl and cl.c now have Expand, PNG and SVG actions. Analysis plots show
+Reynolds/Mach; Xref is shown where moment references apply.
+All axis titles are bold and 10% larger. Cp layout and hover behavior are preserved.
+Keep `dashboard_panels.js` beside the Python engine and distribution assets when
+copying the application; it is embedded into generated standalone reports.
 
 Network-share patch: report staging folders now use normal directory creation
 to inherit the destination folder's Windows permissions, instead of tempfile's
@@ -32,7 +57,8 @@ file groups retain their original CLS targets. Missing axis data is reported.
 These controls are retained in saved views and presets. Numeric ticks and values
 use the original Arial font; word headings retain their existing typography.
 Drag-rise titles show the selected-axis lift coefficient and its actual range.
-Spanwise cl/cl.c, static margin, drag rise and convergence also use two columns,
+Spanwise cl/cl.c and static margin use two columns; residuals, drag rise and
+Delta use three columns,
 stacking on screens below 760 px. The Cp station layout is unchanged.
 
 Each Cp station panel includes its section outline underneath, using a shared

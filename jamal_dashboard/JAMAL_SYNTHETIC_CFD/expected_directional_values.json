@@ -1,0 +1,19 @@
+{
+  "polar": "POLAR-003",
+  "alpha": 3.0,
+  "betas": [
+    -8.0,
+    -5.0,
+    -2.0,
+    0.0,
+    1.0,
+    4.0,
+    8.0
+  ],
+  "dCYS_dBeta_rad": -0.8,
+  "dCNS_dBeta_rad": 0.12,
+  "directional_static_margin_percent_bref": 15.0,
+  "axis": "Stability",
+  "reference": "Original infout reference",
+  "note": "Signed -100*dCN/dCY; no extra BREF division."
+}

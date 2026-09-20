@@ -1,4 +1,50 @@
-# Current update: v25.6.1 (2026-09-19)
+# Current update: v25.8.1 (2026-09-20)
+
+Cp station cards now have Expand only, retaining transparent hover labels and an
+independent, equally scaled airfoil ordinate in the enlarged dialog. Distribution
+headings show only Reynolds/Mach; drag-rise uses one shared Reynolds/Mach heading.
+Delta conditions reuse the Coefficients fixed-angle labels; Xref sits between
+force and moment rows. The additional Delta static margin remains longitudinal.
+
+Static margin offers Longitudinal (-100*dCMS/dCLS, % CREF) and Directional
+(-100*dCNS/dCYS, % BREF), both in Stability axes with the selected moment reference.
+The validated longitudinal derivative/transfer code is retained. The new directional
+calculation uses the existing nonuniform three-point derivative, averages all
+repeated CY samples, and requires a beta sweep at constant alpha with at least
+three finite distinct CY values. Missing/unsuitable input gives an explanation.
+Longitudinal plots select alpha sweeps; directional plots select beta sweeps.
+No extra BREF division is applied to the already normalized coefficient derivative.
+
+Synthetic POLAR-003 supplies ADF and infout, with beta -8 to +8 degrees at alpha=3,
+CYS=-0.8*beta(rad), CNS=+0.12*beta(rad), and expected signed margin +15% BREF.
+There are no optional solver/distribution inputs for this polar. Original fixture
+sources and user-added drag-rise configurations are preserved. Reproduction and
+expected values are documented in JAMAL_SYNTHETIC_CFD/README_DIRECTIONAL.md.
+All 38 tests pass, including directional slopes, duplicate CY handling, missing-input
+recovery and reference shifts. Browser checks cover Cp expansion, shared headings,
+Delta fixed angles/reference placement and persistence of the static-margin mode.
+The fixture validator passes 1,689 checks. The inherited-permissions staging fix
+remains; real-share confirmation is pending.
+
+# Previous update: v25.7 (2026-09-19)
+
+Convergence now has a three-column residual grid versus ALPHA/BETA, including
+additional turbulence equations discovered from Fluent headers. The validated
+legacy parser is retained; a header-aware adapter preserves monitor alignment.
+Cp-max and tstep-ave share a panel with independent ordinates. Delta shows all
+six coefficients and collapsible L/D (and retained static-margin comparison).
+Drag-rise setup accepts multiple folders per case, retaining legacy single-folder
+setups. Numeric filename CL targets group overlays in a three-column grid.
+Spanwise cl/cl.c have Expand/PNG/SVG actions; Cp actions/layout remain unchanged.
+The cl.c axis omits [m]; physical units remain in the export. Analysis headings
+show Re/Mach and reference metadata. Span/drag headings explicitly use source
+Xref; transformed moment/static-margin comparisons use the selected reference.
+Axis titles are bold at 110% size, with the existing typefaces preserved.
+New runtime asset dashboard_panels.js must accompany the existing source files.
+All 36 tests pass, including multi-folder cache reuse and k/omega header alignment.
+The inherited-permissions staging fix below is retained; share retest is pending.
+
+# Previous update: v25.6.1 (2026-09-19)
 
 Network staging permission patch: replace TemporaryDirectory/mkdtemp (0o700)
 with a UUID-named sibling staging folder created by normal Path.mkdir (default
