@@ -60,9 +60,9 @@ class PressureTests(unittest.TestCase):
         for q in (0,-1,float('nan')):
             with self.assertRaises(ValueError):
                 dist.pressure_section(points,self.geometry,self.p,q)
-        # Extra chordwise turns are rejected; no multi-element segmentation is attempted.
-        bad=[[0,0],[.7,.1],[.4,.2],[1,0],[.5,-.1],[0,0]]
-        with self.assertRaisesRegex(ValueError,'extra turns'):
+        # A crossing contour remains invalid; closed non-crossing coves are now supported.
+        bad=[[0,0],[.7,.1],[.4,-.2],[1,0],[.5,-.1],[0,0]]
+        with self.assertRaisesRegex(ValueError,'intersects'):
             self.section([0]*6,bad)
 
     def test_pressure_loader_projection_ignores_force_file_and_matches_adf(self):

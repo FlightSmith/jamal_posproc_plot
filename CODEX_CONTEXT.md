@@ -1,4 +1,61 @@
-# Current approved update: v25.9 (2026-09-28)
+# Current approved update: v25.10 (2026-09-28)
+
+The user approved committing and pushing v25.10 plus the screenshot-inspired
+synthetic dataset, and rebuilding the runtime ZIP in the repository root.
+Development remains on main at https://github.com/FlightSmith/jamal_posproc_plot.
+Runtime installation instructions and pinned dependencies are now tracked as
+jamal_dashboard/QUICK_START.txt and requirements.txt. The runtime ZIP includes
+the release commit and SHA-256 file manifest. Synthetic fixture bytes are kept
+unchanged by Git so their validation checksums survive a fresh checkout.
+
+Additional user-requested dataset: jamal_dashboard/JAMAL_SYNTHETIC_MULTIELEMENT_SCREENSHOTS
+is separate from the original fixtures and JPEGs. Sparse screenshot coordinate/
+pressure anchors are reconstructed to 603 paired samples (309 main + 294 flap),
+with the same arbitrary start, cove wall and repeated flap start. The user chose
+p=101325 Pa and qdin=0.2*p=20265 Pa (the numeric formula was followed despite
+their wording saying "greater"). Three polars x five ALPHA states x five stations
+provide screenshot-like pressure sweeps, analytical affine-Cp forces and a
+separate uniform-pressure cancellation case. ADF loads come from these pressures.
+generate_screenshot_fixture.py creates inputs/expected values/report/ZIP;
+validate_screenshot_fixture.py independently verified all 45,225 pressure samples,
+75 sections, 21 ALPHA/CL targets, uniform cancellation and 104 source hashes.
+validation_results.json reports PASS. Browser confirms screenshot-like centre
+geometry/Cp and three-polars at CLS=0.3 with no distribution integrity warnings.
+This is an approximate synthetic reconstruction, not transcribed production data.
+No production code was changed for this dataset request.
+
+The user reviewed the multi-element Excel screenshots and authorized implementation
+of item 7. They explicitly selected the existing overall section chord (all-element
+Xmax - Xmin) for combined cl. The previous approved release is v25.9 at 6ceb551.
+
+Matched geometry/pressure now supports consecutive closed contours in a single
+curve block. Boundaries use return to the same X AND ordinate; no global sorting
+or pressure-based surface detection. Each contour may start anywhere and traverse
+either way. Repeated X, vertical cove walls, and consecutive duplicates are kept.
+Upper/lower paths use matched geometry; the connecting aft path is labeled
+trailing edge / cove. Separate Cp/geometry traces prevent element connectors;
+all branches share source style and one legend, with element/surface hover labels.
+
+Integrate each complete closed contour independently, sum body Fx/Fz, project at
+ALPHA, and normalize by overall section chord. Target ALPHA/CLS uses matched
+ordered element samples; repeated X is never collapsed. Self-crossings, touching,
+overlapping/nested solids and unresolved open multi-element boundaries omit loads.
+Original single-element open/blunt contours remain supported. Existing beta,
+flow, and local/canted-coordinate guards remain. Neither total_force inputs nor
+protected coefficient/static-margin calculations were changed.
+
+71 tests pass, including analytical force/rotation, independent winding/start,
+cove/duplicate preservation, invalid geometry, loader-to-target interpolation,
+and separate UI traces. Browser checks passed for two-polars at ALPHA=2.5 and
+CLS=0.5, manual Cp limits, and expanded separate outlines. See
+jamal_dashboard/VALIDATION_v25_10.md and MULTIELEMENT_PROPOSAL.md (now implemented
+design documentation). generate_multielement_demo.py creates a separate ignored
+demo under DASHBOARD/multielement_demo; original fixtures and user's JPEGs remain
+untouched. Exact production-data validation still needs raw section/pressure files.
+Runtime: JAMAL_Dashboard_v25.10_Runtime.zip. Python and Plotly CDN are still required;
+portable/offline work remains deferred. Real network-share ACL retest still pending.
+
+# Last approved update: v25.9 (2026-09-28)
 
 User approved the completed pressure-input Distributions and items 1–6 for commit
 and push. Portable application/startup work remains deferred. v25.8.1 at 16fa8de

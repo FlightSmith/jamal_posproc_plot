@@ -121,7 +121,7 @@ FLUENT_LOG_NAMES = [
 ]
 
 # Module versions shown in the dashboard and JSON output.
-SCRIPT_VERSION = "v25.9"
+SCRIPT_VERSION = "v25.10"
 MODULE_VERSIONS = {
     "infout parser": "1.4",
     "Distributions": jamal_distributions.VERSION,

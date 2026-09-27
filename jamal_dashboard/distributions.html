@@ -1,7 +1,7 @@
 <section class="dashboard-section" id="section-distributions" aria-label="Distributions">
   <div class="card">
     <h2>Spanwise loads and chordwise Cp</h2>
-    <p class="small">Cp = (local pressure − infout p) / qdin. Pressure forces are projected to lift at ALPHA; cl = lift / (qdin × chord). Viscous shear is excluded.</p>
+    <p class="small">Cp = (local pressure − infout p) / qdin. Pressure forces from every section element are summed and projected to lift at ALPHA; cl = lift / (qdin × chord). The section chord is the overall Xmax − Xmin across all elements. Viscous shear is excluded.</p>
     <p class="small">Pressure and section files must use matching point order. Loads require X aft, section ordinate upward, and BETA = 0. Local/canted section coordinates need an explicit body-axis mapping.</p>
     <div class="toolbar-row">
       <label for="distConfig">Configuration</label><select id="distConfig"></select>
@@ -24,7 +24,7 @@
       <label for="distLeadingEdge">Cp leading edge</label>
       <select id="distLeadingEdge"><option value="xmin">Xmin</option><option value="xmax">Xmax (reversed display)</option><option value="raw">Dimensional X</option></select>
     </div>
-    <p class="small">Confirm the leading-edge direction for your geometry. Changing this control only changes Cp normalization; surface point order is preserved. All components use infout BREF for span normalization. Cp station labels follow the selected span coordinate.</p>
+    <p class="small">Confirm the leading-edge direction for your geometry. Changing this control only changes the Cp display; surface point order is preserved. All elements share the same section x/c, so their gaps and overlap remain visible. All components use infout BREF for span normalization. Cp station labels follow the selected span coordinate.</p>
     <p id="distStatus" role="status" aria-live="polite"></p>
     <p id="distReference" class="small"></p>
   </div>
@@ -50,7 +50,7 @@
       <span id="distCpScaleStatus" role="status"></span>
     </div>
     <div id="distStations" style="display:flex;flex-wrap:wrap;gap:12px;margin:12px 0"></div>
-    <p class="small">Each panel shows one station. Upper and lower surfaces share color and line style; hover identifies the surface. Cp curves share a common inverted scale. Below them, section outlines share x/c with an independent y/c axis and equal geometric scaling.</p>
+    <p class="small">Each panel shows one station. Every element and surface shares its source's color and line style; hover identifies the element and surface, including any trailing-edge/cove segment. Elements are drawn separately. Cp curves share a common inverted scale. Below them, section outlines share x/c with an independent y/c axis and equal geometric scaling.</p>
     <div id="distCpGrid" class="dist-cp-grid"></div>
   </div>
   <div class="card"><details><summary>Distribution integrity and source files</summary><pre id="distIntegrity" style="white-space:pre-wrap;max-height:320px;overflow:auto"></pre></details></div>

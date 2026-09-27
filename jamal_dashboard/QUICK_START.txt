@@ -1,0 +1,40 @@
+JAMAL Dashboard v25.10
+
+Source: https://github.com/FlightSmith/jamal_posproc_plot
+The runtime ZIP's RELEASE.json identifies its commit and file checksums.
+
+1. Extract the entire runtime ZIP. Keep all files together.
+2. Install Python 3.11 or newer (validation used Python 3.12).
+   Open PowerShell in the extracted folder and run:
+
+   py -3 -m venv .venv
+   .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+   If the py command is unavailable, use python in the first command.
+3. Double-click START_DASHBOARD.cmd. Keep its terminal open while using JAMAL.
+   The default browser opens at the displayed local URL, normally port 8765.
+4. Select the CFD base folder (containing 02-RUNS and 03-RESULTS), scan and
+   select POLARs, then Generate / Update dashboard.
+5. Distribution file values default to Absolute pressure [Pa]. Use Legacy Cp
+   only for already normalized files. Cp = (p_local - infout p[Pa]) / qdin[Pa].
+   total_force files are ignored. Missing p or positive qdin prevents conversion.
+6. Multi-element section and pressure files must use matching point order.
+   Each element closes at its starting X AND ordinate before the next begins.
+   Repeated X and cove walls are retained; hover identifies element/surface.
+   Pressure forces are summed, projected at ALPHA, and normalized using the
+   overall section chord across all elements. See README.md for conventions.
+7. In Distributions, Add overlay for comparison sources, then compare at ALPHA
+   or CL (global Stability CLS). Shared manual Cp limits are optional.
+
+Reports and caches are written under the first configuration's
+03-RESULTS\DASHBOARD folder. The synthetic validation data is distributed
+separately; it is not required to run the application on your own CFD results.
+
+Python, installed dependencies and Plotly are not bundled. Chart display needs
+access to https://cdn.plot.ly/plotly-2.35.2.min.js. Portable/offline application
+work remains deferred. This is the existing Python/browser runtime.
+
+71 regression tests and the separate screenshot-fixture validation pass.
+Protected calculations and staging permission inheritance are preserved.
+Raw production multi-element validation and real network-share confirmation
+remain pending. See VALIDATION_v25_10.md for details.

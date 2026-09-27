@@ -82,7 +82,10 @@ function distributionAtTarget(seriesList, mode, target) {
     const result=copy(exact);
     result.interpolated=false;result.source_states=sourceStates;result.interpolation=provenance;
     result.cp.forEach(p=>{
-      if(!p.surfaces?.upper || !p.surfaces?.lower) {
+      const classified=Array.isArray(p.elements) && p.elements.length
+        ? p.elements.every(element=>element.surfaces?.upper && element.surfaces?.lower)
+        : p.surfaces?.upper && p.surfaces?.lower;
+      if(!classified) {
         diagnostics.push(`Recorded Cp at Y=${p.y} m has no identified upper/lower surfaces; the original curve is shown without surface classification.`);
       }
     });
@@ -167,20 +170,78 @@ function distributionAtTarget(seriesList, mode, target) {
     const xc=candidates.filter((x,i)=>i===0||!close(x,candidates[i-1]));
     return {x:xc.map(x=>a.xmin+x*a.chord),xc,values:xc.map(x=>blend(sample(aa,x),sample(bb,x),weight))};
   }
+  function blendForces(result,a,b) {
+    for(const key of ['fx','fy','fz','normal_force','axial_force']) {
+      if(key in a || key in b) result[key]=blend(a[key],b[key],weight);
+    }
+    return result;
+  }
+  function orderedCurveAtTarget(a,b,station,description) {
+    // New parser records retain the matched section-file point order. X is not
+    // a unique coordinate on a cove or vertical segment, so never sort/deduplicate.
+    if(!a || !b || !Array.isArray(a.values) || !Array.isArray(b.values) ||
+       !a.values.length || a.values.length!==b.values.length ||
+       a.values.some(v=>!finite(v)) || b.values.some(v=>!finite(v))) {
+      throw new Error(`Cp station Y=${station.y} m has invalid or unmatched ${description} pressure samples.`);
+    }
+    for(const key of ['x','xc']) {
+      if(!Array.isArray(a[key]) || !Array.isArray(b[key]) ||
+         a[key].length!==a.values.length || b[key].length!==b.values.length ||
+         a[key].some((v,i)=>!close(v,b[key][i],key==='x' ? stationTolerance : numericTolerance))) {
+        throw new Error(`Cp station Y=${station.y} m changes the ordered ${description} ${key} samples between bounding states.`);
+      }
+    }
+    for(const curve of [a,b]) if(curve.x.some((x,i)=>!close(x,station.xmin+curve.xc[i]*station.chord,stationTolerance))) {
+      throw new Error(`Cp station Y=${station.y} m has inconsistent ${description} x/c coordinates.`);
+    }
+    return {...copy(a),values:a.values.map((value,i)=>blend(value,b.values[i],weight))};
+  }
+  function elementsAtTarget(a,b) {
+    if(!Array.isArray(a.elements) || !Array.isArray(b.elements) || !a.elements.length || a.elements.length!==b.elements.length) {
+      throw new Error(`Cp station Y=${a.y} m changes or is missing its element set between bounding states.`);
+    }
+    const ids=new Set();
+    const elements=a.elements.map((element,index)=>{
+      const other=b.elements[index],description=`element ${index+1}`;
+      if(!element || !other || typeof element.id!=='string' || !element.id || ids.has(element.id) || element.id!==other.id) {
+        throw new Error(`Cp station Y=${a.y} m changes or duplicates its ordered element identities between bounding states.`);
+      }
+      ids.add(element.id);
+      const result=orderedCurveAtTarget(element,other,a,description);
+      for(const key of ['x','ordinate']) {
+        const aa=element.airfoil?.[key],bb=other.airfoil?.[key];
+        if(!Array.isArray(aa) || !Array.isArray(bb) || aa.length!==element.values.length || bb.length!==other.values.length ||
+           aa.some((value,i)=>!close(value,bb[i],stationTolerance)) ||
+           (key==='x' && aa.some((value,i)=>!close(value,element.x[i],stationTolerance)))) {
+          throw new Error(`Cp station Y=${a.y} m changes or is missing the ordered ${description} section outline.`);
+        }
+      }
+      const sides=Object.keys(element.surfaces||{}).sort(),otherSides=Object.keys(other.surfaces||{}).sort();
+      if(!sides.includes('upper') || !sides.includes('lower') || sides.length!==otherSides.length || sides.some((side,i)=>side!==otherSides[i])) {
+        throw new Error(`Cp station Y=${a.y} m changes or is missing the ${description} upper/lower surface branches.`);
+      }
+      result.surfaces=Object.fromEntries(sides.map(side=>[side,orderedCurveAtTarget(element.surfaces[side],other.surfaces[side],a,`${description} ${side} surface`)]));
+      return blendForces(result,element,other);
+    });
+    const result=orderedCurveAtTarget(a,b,a,'section');
+    result.elements=elements;
+    // A top-level surface pair remains available to older single-element users.
+    if(elements.length===1) result.surfaces=copy(elements[0].surfaces);
+    else delete result.surfaces;
+    return blendForces(result,a,b);
+  }
   try {
     if(!close(left.bref,right.bref,stationTolerance)) throw new Error('BREF is missing or changes between the bounding states.');
     const cpPairs=matchStations(left.cp,right.cp,'Cp');
     const cp=cpPairs.map(([a,b])=>{
       sameGeometry(a,b,'Cp');
+      if('elements' in a || 'elements' in b) return elementsAtTarget(a,b);
       const upper=surfaceAtTarget(a,b,'upper'),lower=surfaceAtTarget(a,b,'lower');
       // Keep legacy arrays connected in contour order; plots should use surfaces
       // directly so upper/lower hover labels cannot change the curve styling.
       const result={...copy(a),surfaces:{upper,lower}};
       for(const k of ['x','xc','values']) result[k]=[...upper[k]].reverse().concat(lower[k]);
-      for(const k of ['fx','fy','fz','normal_force','axial_force']) {
-        if(k in a || k in b) result[k]=blend(a[k],b[k],weight);
-      }
-      return result;
+      return blendForces(result,a,b);
     });
     const spanPairs=matchStations(left.span||[],right.span||[],'Load');
     if(spanPairs.length) {
@@ -188,10 +249,7 @@ function distributionAtTarget(seriesList, mode, target) {
     } else diagnostics.push('No spanwise load stations are available for the bounding states.');
     const span=spanPairs.map(([a,b])=>{
       sameGeometry(a,b,'Load');
-      const result=copy(a);
-      for(const k of ['fx','fy','fz','normal_force','axial_force']) {
-        if(k in a || k in b) result[k]=blend(a[k],b[k],weight);
-      }
+      const result=blendForces(copy(a),a,b);
       // Pressure/forces interpolate linearly at fixed geometry. Lift must use
       // the requested ALPHA, not an average of differently rotated endpoint loads.
       const angle=alpha*Math.PI/180;

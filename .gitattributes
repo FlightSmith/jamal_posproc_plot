@@ -6,3 +6,5 @@
 *.cmd text eol=crlf
 # Preserve checksum-verified fixture bytes on every platform.
 jamal_dashboard/JAMAL_SYNTHETIC_CFD/** -text
+# Keep Windows curve-file CRLF bytes while still checking actual whitespace errors.
+jamal_dashboard/JAMAL_SYNTHETIC_MULTIELEMENT_SCREENSHOTS/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

@@ -1,0 +1,16 @@
+{
+  "version": "v25",
+  "configurations": [
+    {
+      "label": "Screenshot synthetic",
+      "base_directory": "C:\\Users\\User\\Documents\\ChatGPT\\CFD_Plotter_Results\\jamal_dashboard\\JAMAL_SYNTHETIC_MULTIELEMENT_SCREENSHOTS",
+      "polars": [
+        1,
+        2,
+        3
+      ],
+      "distribution_input": "pressure",
+      "drag_rise_dirs": []
+    }
+  ]
+}

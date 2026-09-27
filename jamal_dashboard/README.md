@@ -1,9 +1,60 @@
-# JAMAL Aerodynamic Results Dashboard v25.9
+# JAMAL Aerodynamic Results Dashboard v25.10
+
+Approved release. For runtime installation, see [QUICK_START.txt](QUICK_START.txt)
+and [requirements.txt](requirements.txt). The runtime ZIP is generated in the
+repository root and includes a release commit/file manifest. Python and internet
+access for Plotly remain required; this release retains the Python/browser launcher.
+
+## Multi-element sections (v25.10)
+
+Consecutive closed contours in one section/pressure curve are now supported.
+Each element must return to its starting **X and ordinate** before the next
+element begins. Pressure rows must follow the matching geometry rows. Elements
+are numbered in file order; X overlap, arbitrary starting points, reversed
+traversal, repeated X, and duplicate consecutive points are supported.
+
+Upper/lower paths and the connecting trailing-edge/cove path are plotted
+separately, preserving vertical walls and recesses. All use the source's existing
+style; hover identifies the element and surface. Geometry outlines are also
+separate, so no line joins one element to another. Surface names describe the
+geometry relative to X aft / ordinate up; they do not infer a deflected element's
+local aerodynamic chord direction.
+
+Pressure forces are integrated on each complete contour, summed, then projected
+to lift at ALPHA. As selected by the user, **combined cl and plotted x/c retain
+the overall section chord, Xmax − Xmin across all elements**. Target ALPHA/CL
+interpolation preserves matched point order within each element, including coves
+and multiple Cp values at the same X. Changing element topology/geometry is rejected.
+
+Open multi-element contours, self-crossings, touching/intersecting solids, and
+nested contours need corrected geometry or explicit connectivity; they do not
+produce loads. The original open/blunt single-element format remains supported.
+No element is identified by pressure magnitude or a jump in X alone.
+
+The supplied Excel screenshots guided the topology. They were not transcribed as
+production data. An isolated reproducible demo is available by running
+`python jamal_dashboard/generate_multielement_demo.py` from the repository root.
+It writes to `jamal_dashboard/DASHBOARD/multielement_demo/` and leaves the original
+fixtures and screenshots untouched. POLAR-002 demonstrates a deflected flap.
+Its copied global ADF polars are for target-comparison demonstration, not an
+integral of the invented pressure field. See [validation](VALIDATION_v25_10.md).
+
+A more detailed, standalone screenshot reconstruction is now available in
+`JAMAL_SYNTHETIC_MULTIELEMENT_SCREENSHOTS/` (separate from the original fixtures).
+It preserves 603 ordered samples per station, the observed coordinate/pressure
+anchors, the cove and repeated flap start. User-selected references are
+`p=101325 Pa` and `qdin=0.2*p=20265 Pa`. Three polars and five stations provide
+screenshot-like sweeps, analytical pressure-gradient forces and a uniform-pressure
+zero-load check. Unlike the earlier visual demo, its global ADF loads are derived
+from its own pressure fields. See that folder's README, `expected_values.json`
+and `validation_results.json`. Reproduce with `generate_screenshot_fixture.py`
+and check using `validate_screenshot_fixture.py`; a ready-to-load ZIP is alongside
+the folder. This remains approximate synthetic data, not the original CFD export.
 
 ## Pressure distributions and target comparisons (v25.9)
 
-This approved version implements the requested distribution updates. The previous
-release is v25.8.1. Portable Windows packaging and offline Plotly remain
+The v25.9 update implemented the requested distribution items 1–6. The current
+approved version adds item 7. Portable Windows packaging and offline Plotly remain
 separate future work; this launcher still uses Python and a browser.
 
 In each launcher configuration, choose **Distribution file values**:
@@ -16,8 +67,8 @@ In each launcher configuration, choose **Distribution file values**:
 
 `total_force_state*` files are ignored. Pressure and section files must contain
 the same samples in the same contour order, as confirmed for the new export.
-For a single element, the contour runs from one X extreme to the other and back.
-The matched geometry identifies upper/lower; pressure magnitude does not. Both
+Closed contours may start at any surface point. The matched geometry identifies
+upper/lower; pressure magnitude does not. Both
 surfaces retain the same color/dash and one legend entry; hover names the surface.
 
 The pressure force is integrated around the closed section contour, including
@@ -53,8 +104,8 @@ Existing iteration-history scales and protected scientific calculations are unch
 
 Keep the new `distribution_interpolation.js` beside the existing Python, HTML,
 and JavaScript assets; it is embedded when reports are generated. Current suite:
-**55 passing tests**. See [validation](VALIDATION_v25_9.md) and the
-[multi-element proposal](MULTIELEMENT_PROPOSAL.md), which is not implemented.
+**71 passing tests**. See [v25.10 validation](VALIDATION_v25_10.md) and the
+[multi-element design and input contract](MULTIELEMENT_PROPOSAL.md).
 
 ## Earlier updates
 
@@ -168,7 +219,7 @@ Keep the two scripts and these new assets in the same folder:
 - `jamal_distributions.py` — separate DISTCLCP parser, station matching, raw-file cache and integrity checks.
 - `distributions.html` and `distributions.js` — embedded Distributions tab; no separate files are needed beside a generated report.
 
-Script filenames remain `*_v25.py` for launcher compatibility. Version v25.9 is
+Script filenames remain `*_v25.py` for launcher compatibility. Version v25.10 is
 reported inside the application. The untouched original scripts and README are
 preserved in `baselines/v25`.
 
@@ -221,7 +272,7 @@ python -m unittest discover -s jamal_dashboard -p "test_*.py" -v
 Run from the parent folder; from inside `jamal_dashboard`, use `-s .` instead.
 Tests require NumPy, pandas and Node.js, and use disposable copies of
 `JAMAL_SYNTHETIC_CFD`. They cover numerical fixture values, cache reuse, failure
-handling and unchanged protected source functions. See `VALIDATION_v25_9.md`.
+handling and unchanged protected source functions. See `VALIDATION_v25_10.md`.
 
 The launcher is intended to run as a single process per output project. Its job
 lock does not coordinate separate launcher processes. Staged publication handles

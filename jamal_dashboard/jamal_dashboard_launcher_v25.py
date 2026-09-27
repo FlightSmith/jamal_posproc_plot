@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 
-APP_VERSION = "v25.9"
+APP_VERSION = "v25.10"
 ENGINE_FILENAME = "jamal_polar_convergence_dashboard_v25.py"
 MAX_CONFIGURATIONS = 5
 DEFAULT_OUTPUT_NAME = "dashboard"

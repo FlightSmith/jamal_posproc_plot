@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "fixture": "C:\\Users\\User\\Documents\\ChatGPT\\CFD_Plotter_Results\\jamal_dashboard\\JAMAL_SYNTHETIC_MULTIELEMENT_SCREENSHOTS",
+  "polars": 3,
+  "states": 15,
+  "sections": 75,
+  "pressure_samples": 45225,
+  "interpolation_targets": 21,
+  "interpolation_out_of_range": 0,
+  "uniform_pressure_case": "PASS",
+  "verified_source_files": 104,
+  "python_checks": 184346,
+  "javascript_checks": 193180
+}

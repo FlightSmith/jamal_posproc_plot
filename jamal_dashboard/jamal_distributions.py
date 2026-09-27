@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-from bisect import bisect_right
 import json
 import math
 import os
@@ -10,7 +9,7 @@ from pathlib import Path
 import re
 import tempfile
 
-VERSION = '0.3 pressure integration'
+VERSION = '0.4 multi-element pressure integration'
 STATION_TOLERANCE = 1e-6  # metres
 NUMBER = r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][-+]?\d+)?'
 STATION_PATTERN = re.compile(rf'^(section|cp_dist)_state([1-9]\d*)_station({NUMBER})$', re.I)
@@ -100,11 +99,152 @@ def cached_parse(path, kind, cache_dir, force, counts):
     return data, before
 
 
-def pressure_section(points, geometry, reference_pressure, qdin, input_kind='pressure', surface_order='section'):
-    """Single-element contour, X aft and ordinate up; pressure rows follow geometry.
+def section_topology(geometry):
+    """Recover consecutive closed loops from matched, ordered section coordinates.
 
-    Close the contour with a straight edge (also handles a blunt trailing edge).
-    Pressure is linear on each segment. No global X sorting or force-file input.
+    Closure means the same X AND ordinate, never X alone. Only the legacy single
+    edge-to-edge contour may omit its closing point. Do not infer gaps or join
+    separate open elements. All returned indices address the original samples.
+    """
+    if len(geometry) < 4 or any(len(p) != 2 or not all(math.isfinite(v) for v in p) for p in geometry):
+        raise ValueError('finite section coordinates and a resolved contour are required')
+    lo, hi = min(p[0] for p in geometry), max(p[0] for p in geometry)
+    chord = hi-lo
+    if chord <= 0:
+        raise ValueError('a nonzero section chord is required')
+    tol = max(1e-12, min(STATION_TOLERANCE, chord*1e-8))
+    near = lambda a,b: abs(a[0]-b[0]) <= tol and abs(a[1]-b[1]) <= tol
+    contours, start = [], 0
+    while start < len(geometry):
+        end, edges = None, 0
+        for i in range(start+1, len(geometry)):
+            if not near(geometry[i-1], geometry[i]):
+                edges += 1
+            if edges >= 3 and near(geometry[start], geometry[i]):
+                end = i
+                # Preserve duplicate closure rows with their corresponding Cp.
+                while end+1 < len(geometry) and near(geometry[start], geometry[end+1]):
+                    end += 1
+                break
+        if end is None:
+            if contours:
+                raise ValueError('element boundaries unresolved: every element must return to its starting X and ordinate')
+            # Compatibility with the original open/blunt single-element export.
+            xs = [p[0] for p in geometry]
+            at = lambda x, edge: abs(x-edge) <= tol
+            if at(xs[0], hi) and at(xs[-1], hi):
+                turn = xs.index(lo)
+            elif at(xs[0], lo) and at(xs[-1], lo):
+                turn = xs.index(hi)
+            else:
+                raise ValueError('element boundaries unresolved: closed contours are required')
+            branches = [xs[:turn+1], xs[turn:]]
+            if any(len(b)<3 or any((v-u)*(b[-1]-b[0]) <= 0 for u,v in zip(b,b[1:])) for b in branches):
+                raise ValueError('open contour has extra turns; explicit element closure is required')
+            end = len(geometry)-1
+        contours.append(list(range(start,end+1)))
+        start = end+1
+
+    def cross(a,b,c):
+        return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0])
+
+    def intersects(a,b,c,d):
+        if (max(a[0],b[0])+tol < min(c[0],d[0]) or max(c[0],d[0])+tol < min(a[0],b[0])
+                or max(a[1],b[1])+tol < min(c[1],d[1]) or max(c[1],d[1])+tol < min(a[1],b[1])):
+            return False
+        epsilon = tol*max(math.dist(a,b), math.dist(c,d),tol)
+        ab, ac, cd, ca = cross(a,b,c), cross(a,b,d), cross(c,d,a), cross(c,d,b)
+        return ((min(ab,ac) <= epsilon and max(ab,ac) >= -epsilon)
+                and (min(cd,ca) <= epsilon and max(cd,ca) >= -epsilon))
+
+    polygons, result = [], []
+    for number, indices in enumerate(contours,1):
+        # Geometry-only simplification for validity checks. Output/integration
+        # retains every paired pressure row, including repeated X and zero edges.
+        vertices = []
+        for i in indices:
+            if not vertices or not near(geometry[i],vertices[-1]):
+                vertices.append(geometry[i])
+        if len(vertices)>1 and near(vertices[0],vertices[-1]):
+            vertices.pop()
+        n = len(vertices)
+        if n < 3:
+            raise ValueError(f'element {number} has fewer than three distinct vertices')
+        segments = list(zip(vertices,vertices[1:]+vertices[:1]))
+        for i,(a,b) in enumerate(segments):
+            for j in range(i+1,n):
+                if j==i+1 or (i==0 and j==n-1):
+                    continue
+                if intersects(a,b,*segments[j]):
+                    raise ValueError(f'element {number} contour intersects or touches itself')
+            c = vertices[(i+2)%n]
+            if abs(cross(a,b,c)) <= tol*max(math.dist(a,b),math.dist(b,c)) and (
+                    (a[0]-b[0])*(c[0]-b[0])+(a[1]-b[1])*(c[1]-b[1]) > tol*tol):
+                raise ValueError(f'element {number} contour doubles back on itself')
+        # Translate before the shoelace sum to avoid cancellation at large offsets.
+        origin = vertices[0]
+        area2 = math.fsum(cross(origin,a,b) for a,b in segments)
+        if abs(area2) <= chord*chord*1e-12:
+            raise ValueError(f'element {number} contour has zero enclosed area')
+        polygons.append((vertices,segments))
+        xs = [geometry[i][0] for i in indices]
+        elo,ehi = min(xs),max(xs)
+        if ehi-elo <= tol:
+            raise ValueError(f'element {number} has no resolved X extent')
+        # Two ordered paths from the forward X extreme to the first aft extreme
+        # on each side. Their remaining connecting path is a blunt TE or cove;
+        # its vertical walls/extra turns must not be sorted away.
+        leading = xs.index(elo)
+        def path_to_aft(step):
+            path = [leading]
+            while abs(xs[path[-1]]-ehi)>tol:
+                path.append((path[-1]+step)%len(indices))
+                if len(path)>len(indices):
+                    raise ValueError(f'element {number} has unresolved surface paths')
+            # Use the endpoint adjacent to the first real edge when closure
+            # duplicates the LE. This also preserves separate LE-side pressures.
+            while len(path)>1 and near(geometry[indices[path[0]]],geometry[indices[path[1]]]):
+                path.pop(0)
+            return path
+        paths = [path_to_aft(1),path_to_aft(-1)]
+        def ordinate_integral(path):
+            return math.fsum((geometry[indices[a]][1]+geometry[indices[b]][1])*(xs[b]-xs[a])/2
+                             for a,b in zip(path,path[1:]))
+        means = [ordinate_integral(path) for path in paths]
+        if abs(means[0]-means[1]) <= chord*chord*1e-12:
+            raise ValueError(f'element {number} upper/lower geometry is ambiguous')
+        upper = 0 if means[0]>means[1] else 1
+        surfaces = {'upper':[indices[i] for i in paths[upper]],
+                    'lower':[indices[i] for i in paths[1-upper]]}
+        aft = [paths[0][-1]]
+        while aft[-1] != paths[1][-1]:
+            aft.append((aft[-1]+1)%len(indices))
+        if any(not near(geometry[indices[a]],geometry[indices[b]]) for a,b in zip(aft,aft[1:])):
+            surfaces['trailing edge / cove'] = [indices[i] for i in aft]
+        result.append({'indices':indices, 'surfaces':surfaces, 'direction':1 if area2>0 else -1,
+                       'id':f'element-{number}', 'name':f'Element {number}'})
+
+    def contains(vertices, point):
+        x,z = point
+        inside = False
+        for a,b in zip(vertices,vertices[1:]+vertices[:1]):
+            if (a[1]>z)!=(b[1]>z) and x < a[0]+(b[0]-a[0])*(z-a[1])/(b[1]-a[1]):
+                inside = not inside
+        return inside
+    for i,(vertices,segments) in enumerate(polygons):
+        for other,edges in polygons[i+1:]:
+            if (any(intersects(a,b,c,d) for a,b in segments for c,d in edges)
+                    or contains(vertices,other[0]) or contains(other,vertices[0])):
+                raise ValueError('element contours intersect, touch or overlap; separate non-overlapping solids are required')
+    return result
+
+
+def pressure_section(points, geometry, reference_pressure, qdin, input_kind='pressure', surface_order='section', topology=None):
+    """Integrate matched pressure around each element, then sum body Fx/Fz.
+
+    X is aft, ordinate up. Pressure is linear on each original contour segment.
+    Common x/c and combined cl use the whole section's X extent, as selected by
+    the user. Upper/lower/cove labels do not affect pressure quadrature.
     """
     if not math.isfinite(qdin) or qdin <= 0:
         raise ValueError('positive finite qdin is required')
@@ -113,64 +253,33 @@ def pressure_section(points, geometry, reference_pressure, qdin, input_kind='pre
     if input_kind == 'pressure' and (reference_pressure is None or not math.isfinite(reference_pressure)):
         raise ValueError('infout p[Pa] is required for absolute pressure')
     outline = list(reversed(geometry)) if surface_order == 'reverse' else geometry
-    if len(points) != len(outline) or any(abs(p[0]-g[0]) > STATION_TOLERANCE for p, g in zip(points, outline)):
+    if len(points) != len(outline) or any(abs(p[0]-g[0]) > STATION_TOLERANCE for p,g in zip(points,outline)):
         raise ValueError('pressure/section point order does not match; matched contour samples are required')
+    topology = section_topology(outline) if topology is None or surface_order=='reverse' else topology
     xs = [p[0] for p in points]
-    lo, hi = min(xs), max(xs)
+    lo,hi = min(g[0] for g in outline),max(g[0] for g in outline)
     chord = hi-lo
-    if chord <= 0 or len(points) < 5:
-        raise ValueError('a nonzero chord and two resolved surfaces are required')
-    tol = min(STATION_TOLERANCE, chord*1e-7)
-    at = lambda x, edge: abs(x-edge) <= tol
-    if at(xs[0], hi) and at(xs[-1], hi):
-        turn = xs.index(lo)
-    elif at(xs[0], lo) and at(xs[-1], lo):
-        turn = xs.index(hi)
-    else:
-        raise ValueError('single-element contour must run edge-to-edge and back; element boundaries are unresolved')
-    branches = [list(range(turn+1)), list(range(turn, len(xs)))]
-    for branch in branches:
-        if len(branch) < 3:
-            raise ValueError('both surfaces need at least three samples')
-        if xs[branch[0]] > xs[branch[-1]]:
-            branch.reverse()
-        if any(xs[b] <= xs[a] for a, b in zip(branch, branch[1:])):
-            raise ValueError('surface contains repeated X or extra turns; multi-element/overhanging contours are unresolved')
-    def ordinate_mean(indices):
-        return sum((outline[a][1]+outline[b][1])*(xs[b]-xs[a])/2 for a,b in zip(indices,indices[1:]))/chord
-    means = [ordinate_mean(branch) for branch in branches]
-    if abs(means[0]-means[1]) < chord*1e-10:
-        raise ValueError('upper/lower geometry is ambiguous')
-    # With matched X samples, reject intersecting upper/lower branches rather than guessing.
-    def interpolate_z(indices, coordinates, x):
-        pos=max(0,min(len(indices)-2,bisect_right(coordinates,x)-1))
-        a,b=indices[pos:pos+2]
-        return outline[a][1]+(outline[b][1]-outline[a][1])*(x-xs[a])/(xs[b]-xs[a])
-    upper_index = 0 if means[0] > means[1] else 1
-    upper, lower = branches[upper_index], branches[1-upper_index]
-    upper_x, lower_x = [xs[i] for i in upper], [xs[i] for i in lower]
-    for x in sorted(set(xs)):
-        if interpolate_z(upper,upper_x,x) < interpolate_z(lower,lower_x,x)-tol:
-            raise ValueError('section surfaces cross; contour cannot be classified')
     values = [(p[1]-reference_pressure)/qdin if input_kind=='pressure' else p[1] for p in points]
-    if not all(math.isfinite(v) for v in values):
-        raise ValueError('non-finite pressure coefficient')
-    area2 = sum(a[0]*b[1]-b[0]*a[1] for a,b in zip(outline,outline[1:]+outline[:1]))
-    if abs(area2) < chord*chord*1e-12:
-        raise ValueError('section contour has zero enclosed area')
-    direction = 1 if area2 > 0 else -1
-    # Body X points forward, Z down; pressure force is minus outward normal.
-    fx, fz = 0., 0.
-    for i,a in enumerate(outline):
-        j=(i+1)%len(outline); b=outline[j]
-        pressure = qdin*(values[i]+values[j])/2
-        fx += direction*pressure*(b[1]-a[1])
-        fz -= direction*pressure*(b[0]-a[0])
-    surfaces = {name: {'x':[xs[i] for i in branch], 'xc':[(xs[i]-lo)/chord for i in branch],
-                       'values':[values[i] for i in branch]}
-                for name,branch in [('upper',upper),('lower',lower)]}
-    return {'x':xs, 'xc':[(x-lo)/chord for x in xs], 'values':values, 'surfaces':surfaces,
-            'fx':fx, 'fz':fz}
+    if not all(math.isfinite(v) for v in xs+values):
+        raise ValueError('non-finite pressure coefficient or coordinate')
+    def curve(indices):
+        return {'x':[xs[i] for i in indices], 'xc':[(xs[i]-lo)/chord for i in indices],
+                'values':[values[i] for i in indices]}
+    elements = []
+    for element in topology:
+        indices = element['indices']
+        segments = list(zip(indices,indices[1:]+indices[:1]))
+        # Body X forward, Z down: pressure force is minus the outward normal.
+        fx = element['direction']*qdin*math.fsum((values[a]+values[b])*(outline[b][1]-outline[a][1])/2 for a,b in segments)
+        fz = -element['direction']*qdin*math.fsum((values[a]+values[b])*(outline[b][0]-outline[a][0])/2 for a,b in segments)
+        elements.append({**curve(indices), 'id':element['id'], 'name':element['name'], 'fx':fx, 'fz':fz,
+                         'airfoil':{'x':[outline[i][0] for i in indices], 'ordinate':[outline[i][1] for i in indices]},
+                         'surfaces':{name:curve(branch) for name,branch in element['surfaces'].items()}})
+    result = {**curve(range(len(points))), 'elements':elements,
+              'fx':math.fsum(e['fx'] for e in elements), 'fz':math.fsum(e['fz'] for e in elements)}
+    if len(elements)==1:
+        result['surfaces'] = elements[0]['surfaces']
+    return result
 
 
 def attach_global_lift(data, adf_data):
@@ -214,7 +323,7 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
                 if progress:
                     progress(f"{cfg['label']} Â· {polar} Â· {component.name}")
                 geometry, cps = [], {}
-                outlines = {}
+                outlines, topologies = {}, {}
                 span_reference = meta.get('bref')
                 reference_source = 'infout BREF'
                 planar_geometry = True
@@ -323,8 +432,19 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
                               'airfoil':{'x':[r[0] for r in outline], 'ordinate':[r[1] for r in outline]}}
                         span = {**g, 'fx':None, 'fz':None, 'lift':None, 'cl':None}
                         try:
-                            pressure = pressure_section(points, outline, meta.get('p'), q, series['input_kind'])
-                            cp['surfaces'] = pressure['surfaces']
+                            if g['y'] not in topologies:
+                                try:
+                                    topologies[g['y']] = section_topology(outline)
+                                except ValueError as error:
+                                    topologies[g['y']] = str(error)
+                            topology = topologies[g['y']]
+                            if isinstance(topology, str):
+                                raise ValueError(topology)
+                            pressure = pressure_section(points, outline, meta.get('p'), q, series['input_kind'], topology=topology)
+                            cp['elements'] = pressure['elements']
+                            if 'surfaces' in pressure:
+                                cp['surfaces'] = pressure['surfaces']
+                            span['element_count'] = len(pressure['elements'])
                             if planar_geometry:
                                 span.update(fx=pressure['fx'], fz=pressure['fz'])
                             if valid_lift:

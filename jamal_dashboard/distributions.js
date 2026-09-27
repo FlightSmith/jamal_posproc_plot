@@ -21,6 +21,29 @@ function distributionCpRange(series, mode, minText, maxText) {
     return {range:automatic,error:'Enter finite limits with minimum < maximum. Automatic scale is shown.'};
   return {range:[max,min],error:''};
 }
+function distributionCpTraces(point, leadingEdge, style, legendName, curveId) {
+  const safe = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const elements = point.elements?.length ? point.elements : [point];
+  const traces = [], airfoils = [];
+  const hoverlabel = {bgcolor:'rgba(0,0,0,0)',bordercolor:'rgba(0,0,0,0)',font:{color:style.color}};
+  const line = {color:style.color,dash:style.dash};
+  const horizontal = values => leadingEdge === 'raw' ? values.x
+    : leadingEdge === 'xmax' ? values.xc.map(value => 1-value) : values.xc;
+  elements.forEach((element, index) => {
+    const elementLabel = point.elements?.length ? `${safe(element.name || `Element ${index+1}`)}<br>` : '';
+    const surfaces = element.surfaces ? Object.entries(element.surfaces) : [['Unclassified', element]];
+    surfaces.forEach(([surface, branch]) => traces.push({x:horizontal(branch),y:branch.values,
+      mode:'lines',name:legendName,legendgroup:curveId,showlegend:traces.length===0,
+      line:{...line},hoverlabel,
+      hovertemplate:`${elementLabel}${safe(surface)}<br>${leadingEdge==='raw'?'X [m]':'x/c'}: %{x:.4f}<br>Cp: %{y:.5f}<extra></extra>`}));
+    if(element.airfoil) airfoils.push({
+      x:element.airfoil.x.map(x=>leadingEdge==='raw'?x:leadingEdge==='xmax'?(point.xmax-x)/point.chord:(x-point.xmin)/point.chord),
+      y:element.airfoil.ordinate.map(y=>leadingEdge==='raw'?y:y/point.chord),yaxis:'y2',
+      mode:'lines',name:legendName,line:{...line},showlegend:false,legendgroup:curveId,hoverlabel,
+      hovertemplate:`${elementLabel}${leadingEdge==='raw'?'X [m]':'x/c'}: %{x:.4f}<br>${leadingEdge==='raw'?'y [m]':'y/c'}: %{y:.5f}<extra></extra>`});
+  });
+  return {traces,airfoils};
+}
 function distributionStation(series, station, mode='eta') {
   const value = distributionCoordinate(series, station.y, mode);
   const position = mode === 'y' ? `Y = ${station.y.toFixed(3)} m`
@@ -37,7 +60,7 @@ function distributionLoadsText(series, mode) {
   const field = value => value === null || value === undefined || (typeof value === 'number' && !Number.isFinite(value))
     ? 'NA' : String(value).replace(/[\t\r\n]/g,' ');
   const rows = ['# JAMAL spanwise loads; tab-separated; missing values = NA',
-    '# Pressure-derived lift (no shear); normalization: infout BREF. cl.c = cl * local chord [m]. All stations of displayed series.',
+    '# Pressure-derived lift (no shear), summed over all section elements; span normalization: infout BREF. cl.c = cl * section chord [m]. Section chord = overall section Xmax - Xmin. All stations of displayed series.',
     `# Selected coordinate: ${mode === 'eta' ? '2Y/BREF' : mode === 'yb' ? 'Y/BREF' : 'Y [m]'} (normalized coordinates are fractions)`,
     'configuration\tpolar\tcomponent\tstate\talpha_deg\tbeta_deg\tY_m\tBREF_m\tcoordinate\tchord_m\tcl\tcl.c_m'];
   series.filter(s=>s.interpolation).forEach(s=>rows.splice(rows.length-1,0,
@@ -153,21 +176,10 @@ function distributionLoadsText(series, mode) {
       s.cp.filter(p => selectedStations.has(station(s,p).key)).forEach(p => {
         const item = station(s,p);
         if(!groups.has(item.key)) groups.set(item.key,{...item,traces:[],airfoils:[]});
-        const surfaces=p.surfaces?Object.entries(p.surfaces):[['Unclassified',p]];
         const legendName=safe(`${s.configuration} · ${s.polar.replace('POLAR-','P')} · α=${angleText(s.alpha)}° β=${angleText(s.beta)}°`), curveId=key(s);
-        surfaces.forEach(([surface,branch],branchIndex)=>groups.get(item.key).traces.push({x:le === 'raw' ? branch.x : le === 'xmax' ? branch.xc.map(v => 1-v) : branch.xc,
-          y:branch.values, mode:'lines', name:legendName,legendgroup:curveId,showlegend:branchIndex===0,
-          line:{color:style.color,dash:style.dash},
-          hoverlabel:{bgcolor:'rgba(0,0,0,0)',bordercolor:'rgba(0,0,0,0)',font:{color:style.color}},
-          hovertemplate:`${surface}<br>${le === 'raw' ? 'X [m]' : 'x/c'}: %{x:.4f}<br>Cp: %{y:.5f}<extra></extra>`}));
-        if(p.airfoil) {
-          const group=groups.get(item.key), cpTrace=group.traces[group.traces.length-1];
-          group.airfoils.push({x:p.airfoil.x.map(x=>le==='raw'?x:le==='xmax'?(p.xmax-x)/p.chord:(x-p.xmin)/p.chord),
-            y:p.airfoil.ordinate.map(y=>le==='raw'?y:y/p.chord), yaxis:'y2',
-            mode:'lines',name:cpTrace.name,line:{...cpTrace.line},showlegend:false,
-            legendgroup:curveId,hoverlabel:cpTrace.hoverlabel,
-            hovertemplate:`${le==='raw'?'X [m]':'x/c'}: %{x:.4f}<br>${le==='raw'?'y [m]':'y/c'}: %{y:.5f}<extra></extra>`});
-        }
+        const group=groups.get(item.key), elementTraces=distributionCpTraces(p,le,style,legendName,curveId);
+        group.traces.push(...elementTraces.traces);
+        group.airfoils.push(...elementTraces.airfoils);
 
       });
     });
@@ -242,7 +254,8 @@ function distributionLoadsText(series, mode) {
     if(unavailableLoads.length) byId('distStatus').textContent+=` Loads unavailable: ${unavailableLoads.map(s=>`${s.polar} / ${s.component}`).join(', ')}. See distribution integrity for the reason.`;
     byId('distReference').textContent = (mode==='y' ? 'Station labels use dimensional Y [m]. ' :
       `Station percentage = ${mode==='eta'?'200':'100'} × Y / infout BREF. `)+
-      distinct(series.map(s=>`${s.configuration} · ${s.polar}: BREF = ${distributionSpanReference(s) ?? 'unavailable'} m`)).join(' · ');
+      distinct(series.map(s=>`${s.configuration} · ${s.polar}: BREF = ${distributionSpanReference(s) ?? 'unavailable'} m`)).join(' · ')+
+      ' · cl and x/c use the overall section chord (Xmax − Xmin across all elements).';
     remember();
   }
   function init() {
