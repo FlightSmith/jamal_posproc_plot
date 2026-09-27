@@ -1,4 +1,49 @@
-# Current update: v25.8.1 (2026-09-20)
+# Current approved update: v25.9 (2026-09-28)
+
+User approved the completed pressure-input Distributions and items 1–6 for commit
+and push. Portable application/startup work remains deferred. v25.8.1 at 16fa8de
+is the previous approved release. The repository has moved to
+https://github.com/FlightSmith/jamal_posproc_plot; development remains on main.
+
+cp_dist_stateS_stationY now defaults to absolute pressure [Pa]. Cp uses
+(p_local - infout p[Pa]) / qdin[Pa]. The launcher also offers explicit Legacy Cp
+for old data; no magnitude-based format guessing. The input choice is saved in
+setup files. Original synthetic fixtures remain unchanged and require Legacy Cp.
+total_force_state files are no longer inspected, used, or included in provenance.
+
+The user confirmed matching pressure/section point order and selected
+pressure-derived lift (not the unprojected normal-force integral). Single-element
+surfaces split at X extrema and are labeled using the matched section ordinate.
+Closed-contour pressure quadrature gives body Fx/Fz, then
+L'=Fx*sin(alpha)-Fz*cos(alpha), cl=L'/(qdin*chord), cl.c=cl*chord.
+This requires X aft, ordinate up, beta=0, and constant flow matching infout.
+Viscous shear is excluded. Missing p/q, unresolved surface connectivity, or
+metadata declaring local/canted coordinates gives an explanation and no invented
+lift. Original VTAIL metadata has a local normal: its Cp is retained; body loads
+await explicit section-to-body/projected-span mapping.
+
+Distributions uses the common trace style including dashes/markers. Upper/lower
+share style and legend visibility, with surface identified in hover. Shared Cp
+limits are automatic by default, with finite ordered manual limits available.
+Compare at ALPHA or global Stability CLS reconstructs each selected/pinned
+configuration/POLAR/component independently. State mapping remains infout order;
+only the interpolation search sorts ALPHA. No extrapolation or ambiguous CL
+inversion. Surface interpolation and load projection retain source-state metadata,
+also included in text exports. Target and Cp-scale controls persist in last view.
+New embedded runtime asset: distribution_interpolation.js.
+
+Convergence residual-vs-ALPHA/BETA log axes default to 1e-9..1e0; iteration histories
+retain their scales. Longitudinal -100*dCMS/dCLS [% CREF], directional
+-100*dCNS/dCYS [% BREF], moment transfers and other protected code remain intact.
+Normal-directory staging ACL inheritance and rollback are retained; real network
+share verification is still pending. 55 tests pass, including new analytical
+pressure and interpolation checks. See jamal_dashboard/VALIDATION_v25_9.md.
+
+Item 7 (wing/flap multi-element contours) is investigated but NOT implemented.
+See jamal_dashboard/MULTIELEMENT_PROPOSAL.md before proceeding. User requires
+discussion before implementation; no synthetic multi-element data was created.
+
+# Previous update: v25.8.1 (2026-09-20)
 
 Cp station cards now have Expand only, retaining transparent hover labels and an
 independent, equally scaled airfoil ordinate in the enlarged dialog. Distribution

@@ -10,6 +10,17 @@ function distributionCoordinate(series, y, mode) {
 function distributionChordLoad(point) {
   return Number.isFinite(point.cl) && Number.isFinite(point.chord) && point.chord > 0 ? point.cl * point.chord : null;
 }
+function distributionCpRange(series, mode, minText, maxText) {
+  let low=Infinity, high=-Infinity;
+  series.forEach(s=>s.cp.forEach(p=>p.values.forEach(v=>{if(Number.isFinite(v)){low=Math.min(low,v);high=Math.max(high,v);}})));
+  const padding=Number.isFinite(low)?Math.max(.05,(high-low)*.08):.05;
+  const automatic=Number.isFinite(low)?[high+padding,low-padding]:[1,-1];
+  if(mode!=='manual') return {range:automatic,error:''};
+  const min=Number(minText),max=Number(maxText);
+  if(String(minText).trim()==='' || String(maxText).trim()==='' || !Number.isFinite(min) || !Number.isFinite(max) || min>=max)
+    return {range:automatic,error:'Enter finite limits with minimum < maximum. Automatic scale is shown.'};
+  return {range:[max,min],error:''};
+}
 function distributionStation(series, station, mode='eta') {
   const value = distributionCoordinate(series, station.y, mode);
   const position = mode === 'y' ? `Y = ${station.y.toFixed(3)} m`
@@ -26,9 +37,11 @@ function distributionLoadsText(series, mode) {
   const field = value => value === null || value === undefined || (typeof value === 'number' && !Number.isFinite(value))
     ? 'NA' : String(value).replace(/[\t\r\n]/g,' ');
   const rows = ['# JAMAL spanwise loads; tab-separated; missing values = NA',
-    '# Normalization: infout BREF. cl.c = cl * local chord [m]. All stations of displayed series.',
+    '# Pressure-derived lift (no shear); normalization: infout BREF. cl.c = cl * local chord [m]. All stations of displayed series.',
     `# Selected coordinate: ${mode === 'eta' ? '2Y/BREF' : mode === 'yb' ? 'Y/BREF' : 'Y [m]'} (normalized coordinates are fractions)`,
     'configuration\tpolar\tcomponent\tstate\talpha_deg\tbeta_deg\tY_m\tBREF_m\tcoordinate\tchord_m\tcl\tcl.c_m'];
+  series.filter(s=>s.interpolation).forEach(s=>rows.splice(rows.length-1,0,
+    `# Target ${field(s.configuration)} / ${field(s.polar)} / ${field(s.component)}: ${JSON.stringify(s.interpolation)}`));
   series.forEach(s => s.span.forEach(p => rows.push([s.configuration,s.polar,s.component,s.state,s.alpha,s.beta,
     p.y,distributionSpanReference(s),distributionCoordinate(s,p.y,mode),p.chord,p.cl,distributionChordLoad(p)].map(field).join('\t'))));
   return rows.join('\r\n')+'\r\n';
@@ -41,9 +54,10 @@ function distributionLoadsText(series, mode) {
   const selectedStations = new Set();
   const storageKey = 'JAMAL_distributions_v3:' + JSON.stringify(distinctSources());
   const panels = new Map();
+  let targetErrors = [];
   function distinctSources() {return [...new Set((distributionData.sources||[]).map(s => s.path.split(/DISTCLCP/i)[0]))].sort();}
   const key = s => JSON.stringify([s.configuration, s.polar, s.component, s.state]);
-  const text = s => `${s.configuration} · ${s.polar} · ${s.component} · α=${s.alpha}° β=${s.beta}°`;
+  const text = s => `${s.configuration} · ${s.polar} · ${s.component} · α=${Number(s.alpha?.toFixed(5))}° β=${s.beta}°`;
   const options = (id, values, label = x => x) => {
     const select = byId(id), old = select.value;
     select.replaceChildren(...values.map(value => new Option(label(value), String(value))));
@@ -55,7 +69,20 @@ function distributionLoadsText(series, mode) {
     (level < 2 || s.polar === byId('distPolar').value) &&
     (level < 3 || s.component === byId('distComponent').value));
   const selected = () => candidates(3).find(s => s.state === Number(byId('distState').value));
-  const shown = () => data.filter(s => overlays.has(key(s)) || s === selected());
+  const shown = () => {
+    const chosen=data.filter(s => overlays.has(key(s)) || s === selected()), mode=byId('distTargetMode').value;
+    targetErrors=[];
+    if(mode==='state') return chosen;
+    if(byId('distTargetValue').value.trim()==='') {targetErrors=['Enter a target value.'];return [];}
+    const groupKey=s=>JSON.stringify([s.configuration,s.polar,s.component]);
+    const groups=new Map(chosen.map(s=>[groupKey(s),s]));
+    return [...groups].flatMap(([id,s])=>{
+      const result=distributionAtTarget(data.filter(v=>groupKey(v)===id),mode,Number(byId('distTargetValue').value));
+      if(result.error) targetErrors.push(`${s.configuration} · ${s.polar} · ${s.component}: ${result.error}`);
+      (result.diagnostics||[]).forEach(message=>targetErrors.push(`${s.configuration} · ${s.polar}: ${message}`));
+      return result.series?[result.series]:[];
+    });
+  };
   const station = (s,p) => distributionStation(s,p,byId('distCoordinate').value);
   const stationCatalog = () => {
     const entries = new Map();
@@ -67,7 +94,9 @@ function distributionLoadsText(series, mode) {
     try {localStorage.setItem(storageKey,JSON.stringify({
       configuration:byId('distConfig').value,polar:byId('distPolar').value,component:byId('distComponent').value,
       state:byId('distState').value,coordinate:byId('distCoordinate').value,leadingEdge:byId('distLeadingEdge').value,
-      overlays:[...overlays],stations:[...selectedStations],single:byId('distSingle').checked
+      overlays:[...overlays],stations:[...selectedStations],single:byId('distSingle').checked,
+      targetMode:byId('distTargetMode').value,targetValue:byId('distTargetValue').value,
+      cpScale:byId('distCpScale').value,cpMin:byId('distCpMin').value,cpMax:byId('distCpMax').value
     }));} catch (_) {}
   }
   function updateControls(level = 0) {
@@ -82,7 +111,9 @@ function distributionLoadsText(series, mode) {
   }
   function updateStations(autoSelect=false) {
     const catalog = stationCatalog();
-    const current = selected();
+    const selectedSource=selected();
+    const current = byId('distTargetMode').value==='state'?selectedSource:shown().find(s=>selectedSource &&
+      s.configuration===selectedSource.configuration && s.polar===selectedSource.polar && s.component===selectedSource.component);
     const currentKeys = current ? current.cp.map(p=>station(current,p).key) : [];
     if ((!ready && !selectedStations.size) || (autoSelect && !currentKeys.some(k=>selectedStations.has(k)))) {
       if(byId('distSingle').checked) selectedStations.clear();
@@ -105,35 +136,37 @@ function distributionLoadsText(series, mode) {
     const series = shown(), mode = byId('distCoordinate').value, le = byId('distLeadingEdge').value;
     const span = [], chordSpan = [], groups = new Map();
     let missingBref = false;
+    const angleText=value=>Number.isFinite(value)?String(Number(value.toFixed(4))):'unavailable';
     const safe = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     series.forEach((s, i) => {
       const style = traceStyle(s.configuration, s.polar);
-      const name = safe(text(s)), shortName = safe(`${s.configuration} · ${s.polar.replace('POLAR-','P')} · ${s.component} · α=${s.alpha}° β=${s.beta}°`), bref = distributionSpanReference(s);
+      const name = safe(text(s)), shortName = safe(`${s.configuration} · ${s.polar.replace('POLAR-','P')} · ${s.component} · α=${angleText(s.alpha)}° β=${angleText(s.beta)}°`), bref = distributionSpanReference(s);
       const normalized = bref !== null;
       if (!normalized && mode !== 'y') missingBref = true;
       const x = y => mode === 'y' ? y : normalized ? y / bref * (mode === 'eta' ? 2 : 1) : null;
-      span.push({x:s.span.map(p => x(p.y)), y:s.span.map(p => p.cl), mode:'lines+markers', name:shortName,
-        line:{color:style.color,dash:POLAR_DASHES[i % POLAR_DASHES.length]},
-        marker:{symbol:MARKER_SYMBOLS[i % MARKER_SYMBOLS.length]}, connectgaps:false,
+      span.push({x:s.span.map(p => x(p.y)), y:s.span.map(p => p.cl), mode:style.mode, name:shortName,
+        line:{color:style.color,dash:style.dash},
+        marker:{color:style.color,symbol:style.symbol,size:style.markerSize}, connectgaps:false,
         hovertemplate:`${name}<br>Span: %{x:.4f}<br>cl: %{y:.5f}<extra></extra>`});
       chordSpan.push({...span[span.length-1], y:s.span.map(distributionChordLoad),
         hovertemplate:`${name}<br>Span: %{x:.4f}<br>cl.c: %{y:.5f} m<extra></extra>`});
       s.cp.filter(p => selectedStations.has(station(s,p).key)).forEach(p => {
         const item = station(s,p);
         if(!groups.has(item.key)) groups.set(item.key,{...item,traces:[],airfoils:[]});
-        groups.get(item.key).traces.push({x:le === 'raw' ? p.x : le === 'xmax' ? p.xc.map(v => 1-v) : p.xc,
-          y:p.values, mode:'lines', name:safe(`${s.configuration} · ${s.polar.replace('POLAR-','P')} · α=${s.alpha}° β=${s.beta}°`),
-          line:{color:style.color,dash:POLAR_DASHES[i % POLAR_DASHES.length]},
+        const surfaces=p.surfaces?Object.entries(p.surfaces):[['Unclassified',p]];
+        const legendName=safe(`${s.configuration} · ${s.polar.replace('POLAR-','P')} · α=${angleText(s.alpha)}° β=${angleText(s.beta)}°`), curveId=key(s);
+        surfaces.forEach(([surface,branch],branchIndex)=>groups.get(item.key).traces.push({x:le === 'raw' ? branch.x : le === 'xmax' ? branch.xc.map(v => 1-v) : branch.xc,
+          y:branch.values, mode:'lines', name:legendName,legendgroup:curveId,showlegend:branchIndex===0,
+          line:{color:style.color,dash:style.dash},
           hoverlabel:{bgcolor:'rgba(0,0,0,0)',bordercolor:'rgba(0,0,0,0)',font:{color:style.color}},
-          hovertemplate:`${le === 'raw' ? 'X [m]' : 'x/c'}: %{x:.4f}<br>Cp: %{y:.5f}<extra></extra>`});
+          hovertemplate:`${surface}<br>${le === 'raw' ? 'X [m]' : 'x/c'}: %{x:.4f}<br>Cp: %{y:.5f}<extra></extra>`}));
         if(p.airfoil) {
           const group=groups.get(item.key), cpTrace=group.traces[group.traces.length-1];
           group.airfoils.push({x:p.airfoil.x.map(x=>le==='raw'?x:le==='xmax'?(p.xmax-x)/p.chord:(x-p.xmin)/p.chord),
             y:p.airfoil.ordinate.map(y=>le==='raw'?y:y/p.chord), yaxis:'y2',
             mode:'lines',name:cpTrace.name,line:{...cpTrace.line},showlegend:false,
-            legendgroup:cpTrace.name,hoverlabel:cpTrace.hoverlabel,
+            legendgroup:curveId,hoverlabel:cpTrace.hoverlabel,
             hovertemplate:`${le==='raw'?'X [m]':'x/c'}: %{x:.4f}<br>${le==='raw'?'y [m]':'y/c'}: %{y:.5f}<extra></extra>`});
-          cpTrace.legendgroup=cpTrace.name;
         }
 
       });
@@ -158,10 +191,10 @@ function distributionLoadsText(series, mode) {
       Plotly.purge(panel.plot);panel.card.remove();panels.delete(key);
     }
     const ordered = [...groups.values()].sort((a,b)=>a.component.localeCompare(b.component)||a.order-b.order);
-    let low=Infinity, high=-Infinity, curveCount=0;
-    ordered.forEach(g=>g.traces.forEach(t=>{curveCount++;t.y.forEach(v=>{if(Number.isFinite(v)){low=Math.min(low,v);high=Math.max(high,v);}});}));
-    const padding=Number.isFinite(low)?Math.max(.05,(high-low)*.08):.05;
-    const cpRange=Number.isFinite(low)?[high+padding,low-padding]:[1,-1];
+    const curveCount=ordered.reduce((n,g)=>n+g.traces.filter(t=>t.showlegend!==false).length,0);
+    const scale=distributionCpRange(series.map(s=>({...s,cp:s.cp.filter(p=>selectedStations.has(station(s,p).key))})),byId('distCpScale').value,byId('distCpMin').value,byId('distCpMax').value);
+    const cpRange=scale.range;
+    byId('distCpScaleStatus').textContent=scale.error;
     ordered.forEach(g=>{
       let panel=panels.get(g.key);
       if(!panel){
@@ -178,7 +211,7 @@ function distributionLoadsText(series, mode) {
     // first airfoil's equal-scale constraint uses a temporary full-grid width.
     ordered.forEach(g=>{
       const panel=panels.get(g.key);
-      const width=panel.plot.clientWidth, bottom=85+g.traces.length*22;
+      const width=panel.plot.clientWidth, bottom=85+g.traces.filter(t=>t.showlegend!==false).length*22;
       let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
       g.airfoils.forEach(t=>{
         t.x.forEach(v=>{minX=Math.min(minX,v);maxX=Math.max(maxX,v);});
@@ -200,8 +233,13 @@ function distributionLoadsText(series, mode) {
         uirevision:JSON.stringify([le,g.key,cpRange,panel.plot.clientWidth])}),{responsive:true,displaylogo:false});
     });
     byId('distOverlays').textContent = overlays.size ? `Pinned overlays: ${data.filter(s => overlays.has(key(s))).map(text).join(' | ')}` : 'Current state shown. Add overlay to retain it while selecting another state or configuration.';
+    if(byId('distTargetMode').value!=='state') byId('distOverlays').textContent=`Target comparison: ${series.map(text).join(' | ')}`;
+    byId('distTargetStatus').textContent=[...series.filter(s=>s.interpolation).map(s=>
+      `${s.configuration} · ${s.polar}: ${s.interpolated?'Interpolated from':'Recorded'} state${s.source_states.length>1?'s':''} ${s.source_states.join(' / ')}${s.interpolated?`, weight ${s.interpolation.weight.toFixed(4)}`:''}.`),...targetErrors].join(' | ');
     byId('distStatus').textContent = !data.length ? 'No distribution data found for the selected POLARs. Expected: 03-RESULTS/DISTCLCP/POLAR-XXX/<component>.' :
       `${series.length} state(s) · ${groups.size} station plot(s) · ${curveCount} Cp curve(s). ${missingBref ? 'Missing positive span reference: choose dimensional Y. ' : ''}${curveCount ? '' : 'Select a station to show Cp. '}${(distributionData.issues||[]).length} distribution integrity warning(s).`;
+    const unavailableLoads=series.filter(s=>!s.span.some(p=>Number.isFinite(p.cl)));
+    if(unavailableLoads.length) byId('distStatus').textContent+=` Loads unavailable: ${unavailableLoads.map(s=>`${s.polar} / ${s.component}`).join(', ')}. See distribution integrity for the reason.`;
     byId('distReference').textContent = (mode==='y' ? 'Station labels use dimensional Y [m]. ' :
       `Station percentage = ${mode==='eta'?'200':'100'} × Y / infout BREF. `)+
       distinct(series.map(s=>`${s.configuration} · ${s.polar}: BREF = ${distributionSpanReference(s) ?? 'unavailable'} m`)).join(' · ');
@@ -220,9 +258,19 @@ function distributionLoadsText(series, mode) {
         (saved.overlays||[]).filter(k=>data.some(s=>key(s)===k)).forEach(k=>overlays.add(k));
         selectedStations.clear(); (saved.stations||[]).forEach(y=>selectedStations.add(y));
         byId('distSingle').checked=Boolean(saved.single);
+        restore('distTargetMode',saved.targetMode); restore('distCpScale',saved.cpScale);
+        [['distTargetValue',saved.targetValue],['distCpMin',saved.cpMin],['distCpMax',saved.cpMax]].forEach(([id,value])=>{if(value!==undefined)byId(id).value=value;});
       }
     } catch (_) {}
     ready = true; updateStations();
+    function targetControls() {
+      const enabled=byId('distTargetMode').value!=='state';
+      byId('distTargetValue').disabled=!enabled;byId('distState').disabled=enabled;
+    }
+    function scaleControls() {['distCpMin','distCpMax'].forEach(id=>byId(id).disabled=byId('distCpScale').value!=='manual');}
+    targetControls();scaleControls();
+    ['distTargetMode','distTargetValue'].forEach(id=>byId(id).addEventListener('change',()=>{targetControls();updateStations(true);draw();}));
+    ['distCpScale','distCpMin','distCpMax'].forEach(id=>byId(id).addEventListener('change',()=>{scaleControls();draw();}));
     let gridWidth = byId('distCpGrid').clientWidth, resizeFrame;
     const gridObserver = new ResizeObserver(entries => {
       const width = entries[0].contentRect.width;

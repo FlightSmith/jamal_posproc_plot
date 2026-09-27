@@ -1,4 +1,62 @@
-# JAMAL Aerodynamic Results Dashboard v25.8.1
+# JAMAL Aerodynamic Results Dashboard v25.9
+
+## Pressure distributions and target comparisons (v25.9)
+
+This approved version implements the requested distribution updates. The previous
+release is v25.8.1. Portable Windows packaging and offline Plotly remain
+separate future work; this launcher still uses Python and a browser.
+
+In each launcher configuration, choose **Distribution file values**:
+
+- **Absolute pressure [Pa]** (default): Cp = (p_local − p) / qdin using infout
+  `p[Pa]` and `qdin[Pa]` (not `ptot` or `qimp`).
+- **Legacy Cp**: for existing already-normalized files, including the unchanged
+  original synthetic dataset. Old setups without a format field default to pressure;
+  select Legacy Cp explicitly when reopening old Cp data.
+
+`total_force_state*` files are ignored. Pressure and section files must contain
+the same samples in the same contour order, as confirmed for the new export.
+For a single element, the contour runs from one X extreme to the other and back.
+The matched geometry identifies upper/lower; pressure magnitude does not. Both
+surfaces retain the same color/dash and one legend entry; hover names the surface.
+
+The pressure force is integrated around the closed section contour, including
+its axial component, then projected to lift at ALPHA. `cl = L'/(qdin*chord)` and
+`cl.c = cl*chord`. Loads are pressure-only and exclude viscous shear. Supported
+load geometry uses X positive aft and ordinate positive up, with BETA=0 and
+constant flow matching the infout reference. Local/canted section coordinates
+need an explicit body-axis and span mapping. In particular the original synthetic
+VTAIL retains Cp but now reports pressure-derived lift unavailable. Invalid or
+ambiguous contours retain recorded Cp where possible and explain missing loads.
+
+To compare different polars or configurations:
+
+1. Select each source and use **Add overlay** to retain it.
+2. Set **Compare at** to **Specified ALPHA** or **Specified CL (Stability CLS)**.
+3. Enter a target and leave the field. Every selected source is reconstructed at
+   that target using its own sweep. CL is the global ADF CLS, not sectional cl.
+
+CL matching first inverts each piecewise-linear CLS/ALPHA sweep. Pressure surfaces
+are then interpolated separately between bounding states; forces interpolate at
+fixed geometry, and lift is projected at the target ALPHA. Source states and
+weights are shown and included in the text export. Extrapolation, multiple CL
+crossings, changing geometry/flow, and missing or ambiguous station matches are
+rejected with an explanation. Recorded-state viewing remains available.
+
+**Cp scale → Specify limits** applies minimum/maximum to all visible station plots
+and their expanded views. Automatic scaling remains the default. Limits stay
+inverted so negative Cp is upward; invalid limits display an explanation and use
+automatic scaling. Target/scale selections are remembered with the distribution view.
+
+Residual plots versus ALPHA/BETA now start at 1e0 and extend down to 1e-9.
+Existing iteration-history scales and protected scientific calculations are unchanged.
+
+Keep the new `distribution_interpolation.js` beside the existing Python, HTML,
+and JavaScript assets; it is embedded when reports are generated. Current suite:
+**55 passing tests**. See [validation](VALIDATION_v25_9.md) and the
+[multi-element proposal](MULTIELEMENT_PROPOSAL.md), which is not implemented.
+
+## Earlier updates
 
 New in v25.8: Cp station cards include Expand, preserving the section outline and
 transparent hover labels. Distribution headings show only Re/Mach. Drag-rise
@@ -94,7 +152,7 @@ The synthetic dataset now includes a paired **VTAIL with a 5 m projected span an
 expected values. The original source fixtures are unchanged. Production V-tail
 physics remains unvalidated; the new data is an illustrative test fixture.
 
-Current development suite: **26 passing tests**, including numerical tail values,
+Historical v25.3 development suite: **26 passing tests**, including numerical tail values,
 span-reference changes, normalized station grouping and original protected modules.
 
 This package contains a lightweight local launcher and the standalone dashboard engine.
@@ -110,7 +168,7 @@ Keep the two scripts and these new assets in the same folder:
 - `jamal_distributions.py` — separate DISTCLCP parser, station matching, raw-file cache and integrity checks.
 - `distributions.html` and `distributions.js` — embedded Distributions tab; no separate files are needed beside a generated report.
 
-Script filenames remain `*_v25.py` for launcher compatibility. Version v25.3 is
+Script filenames remain `*_v25.py` for launcher compatibility. Version v25.9 is
 reported inside the application. The untouched original scripts and README are
 preserved in `baselines/v25`.
 
@@ -137,20 +195,22 @@ drag-rise definition, Delta interpolation, and residual thresholds remain unchan
 ## Distributions conventions
 
 Inputs: `03-RESULTS/DISTCLCP/POLAR-XXX/<component>/` containing
-`section_state1_station*`, `total_force_stateS`, and `cp_dist_stateS_station*`.
-States follow the original infout case order. Force data is N/m, using the body
-frame described in `CODEX_CONTEXT.md`; cl uses `L'/(qdin*chord)` with no delta-Y factor.
+`section_state1_station*` and `cp_dist_stateS_station*`. `total_force_stateS` is
+ignored. Pressure defaults to absolute Pa; explicitly select Legacy Cp for older
+normalized inputs. States follow the original infout case order. Integrated
+pressure force is per unit span, using the coordinate convention described above;
+cl uses `L'/(qdin*chord)` with no delta-Y factor.
 
-The new module has been checked against the supplied synthetic dataset. Production
-validation is pending. Nonzero-beta cases, missing/non-positive qdin, and changing
-flow conditions without per-state qdin produce warnings and omit sectional cl.
-Cp remains available when valid geometry is present.
+The module has been checked against synthetic data. Production validation is
+pending. Missing pressure references or changing flow prevent normalization;
+nonzero beta or unresolved coordinate mappings omit lift with an explanation.
+Recorded Cp remains available where normalization and geometry permit.
 
 The default Cp normalization assumes Xmin is the leading edge, as explicitly
 confirmed by the synthetic fixture. For other geometry, select Xmax or dimensional
-X until its orientation is confirmed. The UI never sorts Cp points by X, so upper
-and lower surface branches remain connected in file order. Use dimensional Y for
-components where the aircraft BREF is not an appropriate span normalization.
+X for display. This selector does not change the force coordinate convention.
+Upper/lower surfaces are separated before interpolation; their samples are never
+mixed by global X sorting. All normalized span coordinates use infout BREF.
 
 ## Validation
 
@@ -161,7 +221,7 @@ python -m unittest discover -s jamal_dashboard -p "test_*.py" -v
 Run from the parent folder; from inside `jamal_dashboard`, use `-s .` instead.
 Tests require NumPy, pandas and Node.js, and use disposable copies of
 `JAMAL_SYNTHETIC_CFD`. They cover numerical fixture values, cache reuse, failure
-handling and unchanged protected source functions. See `VALIDATION_v25_1.md`.
+handling and unchanged protected source functions. See `VALIDATION_v25_9.md`.
 
 The launcher is intended to run as a single process per output project. Its job
 lock does not coordinate separate launcher processes. Staged publication handles

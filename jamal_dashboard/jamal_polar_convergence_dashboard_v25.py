@@ -121,9 +121,9 @@ FLUENT_LOG_NAMES = [
 ]
 
 # Module versions shown in the dashboard and JSON output.
-SCRIPT_VERSION = "v25.8.1"
+SCRIPT_VERSION = "v25.9"
 MODULE_VERSIONS = {
-    "infout parser": "1.3",
+    "infout parser": "1.4",
     "Distributions": jamal_distributions.VERSION,
     "ADF parser": "1.2",
     "Fluent history parser": "1.5",
@@ -135,7 +135,7 @@ MODULE_VERSIONS = {
     "Moment-reference transfer": "1.0 validated",
     "Configuration comparison": "3.0",
     "Curve-style engine": "1.0",
-    "HTML dashboard": "5.9",
+    "HTML dashboard": "6.0",
 }
 
 # Fluent's final-window metrics use at most the last 200 printed iterations.
@@ -634,7 +634,7 @@ def parse_infout(infout_path: Path) -> Dict:
                 meta["cref"] = float(m.group(2))
                 meta["bref"] = float(m.group(3))
         for key, unit in (("XREF", "m"), ("YREF", "m"), ("ZREF", "m"),
-                          ("qdin", "Pa"), ("rho", "kg/m3"), ("V", "m/s")):
+                          ("p", "Pa"), ("qdin", "Pa"), ("rho", "kg/m3"), ("V", "m/s")):
             match = re.search(rf"\b{key}\[{re.escape(unit)}\]:\s*({jamal_distributions.NUMBER})", line, re.I)
             if match:
                 meta[key.lower()] = jamal_distributions.finite_number(match.group(1))
@@ -3635,6 +3635,7 @@ def main():
                                      'runs_directory': str(runs_dir), 'polars': cfg.polars})
     distribution_data = jamal_distributions.read_distributions(
         distribution_configs, all_summaries, parse_infout, output_dir / '.jamal_cache' / 'distributions')
+    jamal_distributions.attach_global_lift(distribution_data, adf_data)
     if distribution_data['issues']:
         integrity_checks = [row for row in integrity_checks if row['severity'] != 'PASS'] + distribution_data['issues']
     provenance['distribution_sources'] = distribution_data['sources']

@@ -72,7 +72,7 @@ drawResidualEquationsPlot = function(data) {
         line:{color:st.color,dash:st.dash},marker:{color:st.color,symbol:st.symbol},
         hovertemplate:`${xKey.toUpperCase()}: %{x:.3f}<br>${spec.label}: %{y:.3e}<extra>%{fullData.name}</extra>`};
     });
-    Plotly.newPlot(spec.id,traces,{xaxis:{title:xKey.toUpperCase()+' [deg]'},yaxis:{...sciAxis(spec.label),dtick:1},
+    Plotly.newPlot(spec.id,traces,{xaxis:{title:xKey.toUpperCase()+' [deg]'},yaxis:{...sciAxis(spec.label),dtick:1,range:[-9,0],autorange:false},
       legend:{orientation:'h',y:-.25},margin:{l:70,r:15,t:15,b:100}},{responsive:true});
   });
 };

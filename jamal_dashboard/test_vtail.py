@@ -1,7 +1,6 @@
 """Paired-tail fixture, component span references, and station panel grouping."""
 import hashlib
 import json
-import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,6 +9,7 @@ import unittest
 
 import jamal_dashboard_launcher_v25 as launcher
 import jamal_distributions as dist
+from test_distributions import fixture_pressure_forces
 
 ROOT=Path(__file__).parent
 FIXTURE=ROOT/'JAMAL_SYNTHETIC_CFD'
@@ -22,16 +22,19 @@ class VtailTests(unittest.TestCase):
         self.base=Path(self.temp.name)/'CFD'
         shutil.copytree(FIXTURE,self.base,ignore=shutil.ignore_patterns('DASHBOARD','__pycache__'))
         self.config=launcher._normalize_configurations({'configurations':[
-            {'label':'Synthetic','base_directory':str(self.base),'polars':[1,2]}]})
+            {'label':'Synthetic','base_directory':str(self.base),'polars':[1,2],
+             'distribution_input':'cp'}]})
 
     def load(self):
         return dist.read_distributions(self.config,[],launcher.ENGINE.parse_infout,Path(self.temp.name)/'cache')
 
-    def test_paired_tail_dimensions_loads_and_pressure_consistency(self):
+    def test_paired_tail_dimensions_pressure_and_withheld_body_loads(self):
         data=self.load()
-        self.assertEqual(data['issues'],[])
+        self.assertEqual(len(data['issues']),10)
+        self.assertTrue(all('VTAIL' in issue['details'] and 'section-to-body and span mapping' in issue['details']
+                            for issue in data['issues']))
         self.assertEqual(len(data['series']),20)
-        self.assertEqual(data['counts'],{'parsed':236,'cached':0})
+        self.assertEqual(data['counts'],{'parsed':216,'cached':0})
         tail=[s for s in data['series'] if s['component']=='VTAIL']
         expected=json.loads((self.base/'expected_vtail_values.json').read_text())
         for s in tail:
@@ -40,8 +43,11 @@ class VtailTests(unittest.TestCase):
             self.assertEqual([s['span'][0]['y'],s['span'][-1]['y']],[-2.5,2.5])
             reference=expected['polars'][s['polar']]['states'][s['state']-1]
             for span,cp,target in zip(s['span'],s['cp'],reference['sections']):
-                self.assertAlmostEqual(span['cl'],target['cl'],places=8)
-                self.assertAlmostEqual(span['fy'],target['FY'],places=5)
+                # Fixture section-normal coordinates do not supply a 3D force
+                # mapping. Never reintroduce prescribed force-table FY or drag.
+                for key in ('fx','fz','lift','cl'):
+                    self.assertIsNone(span[key])
+                self.assertNotIn('fy',span)
                 self.assertAlmostEqual(span['chord'],target['chord'],places=8)
                 self.assertAlmostEqual(min(cp['values'][:41]),target['Cp_upper_min'],places=8)
                 self.assertEqual(len(cp['values']),81)
@@ -49,14 +55,32 @@ class VtailTests(unittest.TestCase):
                 xs=list(reversed(cp['xc'][:41]))
                 delta=[b-a for a,b in zip(upper,lower)]
                 integral=sum((a+b)*(d-c)/2 for a,b,c,d in zip(delta,delta[1:],xs,xs[1:]))
-                self.assertAlmostEqual(integral,-span['fz']/(s['qdin']*span['chord']),places=8)
-                if span['y']:
-                    self.assertAlmostEqual(abs(span['fy']/span['fz']),1,places=8)
-            fy=[p['fy'] for p in s['span']];ys=[p['y'] for p in s['span']]
-            self.assertAlmostEqual(sum((a+b)*(d-c)/2 for a,b,c,d in zip(fy,fy[1:],ys,ys[1:])),0,places=6)
+                self.assertAlmostEqual(integral,target['Cp_normal_integral'],places=8)
+                self.assertAlmostEqual(integral,target['normal_coefficient'],places=8)
+                self.assertEqual(cp['surfaces']['upper']['values'],upper)
+                self.assertEqual(cp['surfaces']['lower']['values'],lower)
         first=next(s for s in tail if s['polar']=='POLAR-001' and s['state']==1)
-        self.assertAlmostEqual(first['span'][4]['cl'],.18,places=9)
-        self.assertEqual(self.load()['counts'],{'parsed':0,'cached':236})
+        self.assertAlmostEqual(expected['polars']['POLAR-001']['states'][0]['sections'][4]['Cp_normal_integral'],.18,places=9)
+        self.assertIsNone(first['span'][4]['cl'])
+        self.assertEqual(self.load()['counts'],{'parsed':0,'cached':216})
+
+    def test_tail_outlines_as_planar_mathematical_pressure_contours(self):
+        """Test local 2D integration without interpreting it as canted body lift."""
+        expected=json.loads((self.base/'expected_vtail_values.json').read_text())
+        for polar,reference in expected['polars'].items():
+            folder=self.base/'03-RESULTS/DISTCLCP'/polar/'VTAIL'
+            qdin=reference['qdin']
+            for state in reference['states']:
+                for section in state['sections']:
+                    station=f"{section['Y']:.3f}"
+                    geometry=dist.parse_curve(folder/f'section_state1_station{station}')
+                    coefficients=dist.parse_curve(folder/f"cp_dist_state{state['state']}_station{station}")
+                    tangent,negative_normal=fixture_pressure_forces(geometry,coefficients,qdin)
+                    contour=dist.pressure_section(coefficients,geometry,None,qdin,input_kind='cp')
+                    self.assertAlmostEqual(contour['fx'],tangent,places=7)
+                    self.assertAlmostEqual(contour['fz'],negative_normal,places=7)
+                    self.assertAlmostEqual(-negative_normal/(qdin*section['chord']),
+                                           section['Cp_normal_integral'],places=8)
 
     def test_component_reference_change_and_invalid_reference(self):
         self.load()
@@ -66,10 +90,16 @@ class VtailTests(unittest.TestCase):
         data=self.load()
         self.assertEqual(data['counts']['parsed'],0)
         self.assertTrue(all(s['span_reference']==6 for s in data['series'] if s['polar']=='POLAR-001' and s['component']=='VTAIL'))
+        self.assertEqual(len(data['issues']),10)
+        self.assertTrue(all('section-to-body and span mapping' in i['details'] for i in data['issues']))
         metadata['span_reference_m']=0;path.write_text(json.dumps(metadata))
         data=self.load()
         self.assertTrue(any('invalid component span reference' in i['details'] for i in data['issues']))
+        self.assertEqual(len(data['issues']),11)
+        self.assertTrue(all('section-to-body and span mapping' in i['details'] or 'invalid component span reference' in i['details']
+                            for i in data['issues']))
         self.assertTrue(all(s['span_reference'] is None for s in data['series'] if s['polar']=='POLAR-001' and s['component']=='VTAIL'))
+        self.assertTrue(all(point['cl'] is None for s in data['series'] if s['component']=='VTAIL' for point in s['span']))
 
     def test_airfoil_coordinates_preserve_section_order_and_cached_values(self):
         data = self.load()
@@ -84,7 +114,7 @@ class VtailTests(unittest.TestCase):
                 self.assertAlmostEqual(min(normalized), 0)
                 self.assertAlmostEqual(max(normalized), 1)
         cached = self.load()
-        self.assertEqual(cached['counts'], {'parsed': 0, 'cached': 236})
+        self.assertEqual(cached['counts'], {'parsed': 0, 'cached': 216})
         self.assertEqual(cached['series'], data['series'])
 
     def test_original_and_additional_fixture_checksums(self):

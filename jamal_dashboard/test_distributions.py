@@ -20,6 +20,24 @@ FIXTURE = ROOT / 'JAMAL_SYNTHETIC_CFD'
 engine = launcher.ENGINE
 
 
+def fixture_pressure_forces(geometry, coefficients, qdin):
+    """Independent quadrature of the documented fixture's two 41-point surfaces.
+
+    The original fixtures prescribe total drag separately from Cp, so their
+    total_force FX and nonzero-alpha cl are not pressure-only reference values.
+    Both surface arrays below run leading edge to trailing edge.
+    """
+    upper = list(reversed(list(zip(geometry[:41], coefficients[:41]))))
+    lower = list(zip(geometry[40:], coefficients[40:]))
+
+    def integral(surface, coordinate):
+        return math.fsum((a[1][1]+b[1][1])*(b[0][coordinate]-a[0][coordinate])/2
+                         for a,b in zip(surface, surface[1:]))
+
+    return (qdin*(integral(lower, 1)-integral(upper, 1)),
+            -qdin*(integral(lower, 0)-integral(upper, 0)))
+
+
 class DistributionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='jamal_distributions_')
@@ -28,7 +46,8 @@ class DistributionTests(unittest.TestCase):
         # Keep the original WING-only regression workload stable as optional fixtures grow.
         shutil.copytree(FIXTURE, self.base, ignore=shutil.ignore_patterns('DASHBOARD', '__pycache__', 'VTAIL'))
         self.payload = {'configurations': [{'label': 'Synthetic', 'base_directory': str(self.base),
-                                            'polars': [1, 2], 'drag_rise_dir': 'BASELINE'}]}
+                                            'polars': [1, 2], 'drag_rise_dir': 'BASELINE',
+                                            'distribution_input': 'cp'}]}
         self.normalized = launcher._normalize_configurations(self.payload)
         self.cache = Path(self.temp.name) / 'cache'
         self.component = self.base / '03-RESULTS/DISTCLCP/POLAR-001/WING'
@@ -40,7 +59,7 @@ class DistributionTests(unittest.TestCase):
         data = self.load()
         self.assertEqual(data['issues'], [])
         self.assertEqual(len(data['series']), 10)
-        self.assertEqual(data['counts'], {'parsed': 118, 'cached': 0})
+        self.assertEqual(data['counts'], {'parsed': 108, 'cached': 0})
         expected = json.loads((FIXTURE / 'expected_values.json').read_text())
         for series in data['series']:
             state = expected['polars'][series['polar']]['states'][series['state']-1]
@@ -48,7 +67,18 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(len(series['span']), 9)
             self.assertEqual(len(series['cp']), 9)
             for span, cp, reference in zip(series['span'], series['cp'], state['sections']):
-                self.assertAlmostEqual(span['cl'], reference['cl'], places=8)
+                folder = self.base/'03-RESULTS/DISTCLCP'/series['polar']/'WING'
+                geometry = dist.parse_curve(folder/f"section_state1_station{span['y']:.3f}")
+                coefficients = dist.parse_curve(folder/f"cp_dist_state{series['state']}_station{span['y']:.3f}")
+                fx, fz = fixture_pressure_forces(geometry, coefficients, series['qdin'])
+                self.assertAlmostEqual(span['fx'], fx, places=7)
+                self.assertAlmostEqual(span['fz'], fz, places=7)
+                normal = -fz/(series['qdin']*span['chord'])
+                self.assertAlmostEqual(normal, reference['Cp_integral_CLB'], places=8)
+                alpha = math.radians(state['alpha'])
+                lift = fx*math.sin(alpha)-fz*math.cos(alpha)
+                self.assertAlmostEqual(span['lift'], lift, places=7)
+                self.assertAlmostEqual(span['cl'], lift/(series['qdin']*span['chord']), places=8)
                 self.assertAlmostEqual(span['chord'], reference['chord'], places=8)
                 self.assertAlmostEqual(span['y'], reference['Y'], places=8)
                 self.assertAlmostEqual(2*span['y']/series['bref'], reference['Y']/5, places=8)
@@ -57,40 +87,59 @@ class DistributionTests(unittest.TestCase):
                 self.assertAlmostEqual(cp['xc'][40], 0)
                 self.assertAlmostEqual(cp['xc'][-1], 1)
                 self.assertAlmostEqual(min(cp['values'][:41]), reference['Cp_upper_min'], places=8)
+                self.assertEqual(cp['surfaces']['upper']['values'], list(reversed(cp['values'][:41])))
+                self.assertEqual(cp['surfaces']['lower']['values'], cp['values'][40:])
             values = series['span']
-            integral = sum((a['lift']+b['lift'])*(b['y']-a['y'])/2 for a,b in zip(values,values[1:]))
-            self.assertAlmostEqual(integral / (series['qdin']*15), state['CLS'], places=8)
+            normal_integral = sum((-a['fz']-b['fz'])*(b['y']-a['y'])/2 for a,b in zip(values,values[1:]))
+            self.assertAlmostEqual(normal_integral/(series['qdin']*15), state['CLB'], places=8)
+            if state['alpha'] == 0:
+                lift_integral = sum((a['lift']+b['lift'])*(b['y']-a['y'])/2 for a,b in zip(values,values[1:]))
+                self.assertAlmostEqual(lift_integral/(series['qdin']*15), state['CLS'], places=8)
 
     def test_separate_cache_reuse_change_and_force(self):
         self.load()
         with patch.object(dist, 'parse_curve', side_effect=AssertionError('reparsed')), \
              patch.object(dist, 'parse_force', side_effect=AssertionError('reparsed')):
-            self.assertEqual(self.load()['counts'], {'parsed': 0, 'cached': 118})
+            self.assertEqual(self.load()['counts'], {'parsed': 0, 'cached': 108})
         path = self.component / 'cp_dist_state3_station0.000'
         path.write_text(path.read_text() + '\n')
-        self.assertEqual(self.load()['counts'], {'parsed': 1, 'cached': 117})
-        self.assertEqual(self.load(force=True)['counts'], {'parsed': 118, 'cached': 0})
+        self.assertEqual(self.load()['counts'], {'parsed': 1, 'cached': 107})
+        self.assertEqual(self.load(force=True)['counts'], {'parsed': 108, 'cached': 0})
 
     def test_multiple_configurations_share_raw_cache_without_merging_series(self):
         self.normalized.append({**self.normalized[0], 'label': 'Comparison'})
         data = self.load()
-        self.assertEqual(data['counts'], {'parsed': 118, 'cached': 118})
+        self.assertEqual(data['counts'], {'parsed': 108, 'cached': 108})
         self.assertEqual(len(data['series']), 20)
         self.assertEqual({s['configuration'] for s in data['series']}, {'Synthetic', 'Comparison'})
         self.assertEqual(data['issues'], [])
 
-    def test_missing_geometry_force_and_unmapped_state_are_reported(self):
+    def test_missing_geometry_pressure_and_unmapped_state_are_reported(self):
         (self.component / 'section_state1_station0.000').unlink()
-        (self.component / 'total_force_state2').unlink()
-        shutil.copy2(self.component / 'total_force_state1', self.component / 'total_force_state9')
+        for path in self.component.glob('cp_dist_state2_station*'):
+            path.unlink()
+        shutil.copy2(self.component/'cp_dist_state1_station0.000', self.component/'cp_dist_state9_station0.000')
         data = self.load()
         reasons = '\n'.join(i['details'] for i in data['issues'])
         self.assertIn('no unique geometry match', reasons)
-        self.assertIn('missing force state', reasons)
+        self.assertIn('missing pressure state', reasons)
         self.assertIn('no matching infout case', reasons)
         self.assertEqual(len(data['series']), 10)
         state2 = next(s for s in data['series'] if s['polar']=='POLAR-001' and s['state']==2)
         self.assertEqual(state2['span'], [])
+        self.assertEqual(state2['cp'], [])
+
+    def test_force_files_are_ignored_without_affecting_pressure_loads_or_cache(self):
+        before = self.load()
+        (self.component/'total_force_state1').write_text('invalid obsolete force input')
+        (self.component/'total_force_state2').unlink()
+        (self.component/'total_force_state9').write_text('0 999 999 999')
+        with patch.object(dist, 'parse_force', side_effect=AssertionError('obsolete force read')):
+            after = self.load()
+        self.assertEqual(after['series'], before['series'])
+        self.assertEqual(after['issues'], [])
+        self.assertEqual(after['counts'], {'parsed': 0, 'cached': 108})
+        self.assertFalse(any(source['kind']=='forces' for source in after['sources']))
 
     def test_dynamic_component_names_and_invalid_chords(self):
         path = self.component / 'section_state1_station0.000'
@@ -100,11 +149,16 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('TEST_COMPONENT', {s['component'] for s in data['series']})
         self.assertTrue(any('non-positive chord' in i['details'] for i in data['issues']))
 
-    def test_nonzero_beta_and_missing_q_do_not_fabricate_cl(self):
+    def test_nonzero_beta_and_missing_q_do_not_fabricate_values(self):
         path = self.base / '02-RUNS/POLAR-001/infout'
-        path.write_text(path.read_text().replace('qdin[Pa]', 'qimp_unused[Pa]'))
+        original_text = path.read_text()
+        path.write_text(original_text.replace('qdin[Pa]', 'qimp_unused[Pa]'))
         data = self.load()
-        self.assertTrue(all(p['cl'] is None for s in data['series'] if s['polar']=='POLAR-001' for p in s['span']))
+        unavailable = [s for s in data['series'] if s['polar']=='POLAR-001']
+        self.assertEqual(len(unavailable), 5)
+        self.assertTrue(all(s['span']==[] and s['cp']==[] for s in unavailable))
+        self.assertTrue(any('positive qdin' in issue['details'] for issue in data['issues']))
+        path.write_text(original_text)
         original = engine.parse_infout
         def nonzero_beta(path):
             value = original(path)
@@ -112,7 +166,10 @@ class DistributionTests(unittest.TestCase):
                 case['beta'] = 3
             return value
         with patch.object(engine, 'parse_infout', side_effect=nonzero_beta):
-            self.assertTrue(all(p['cl'] is None for s in self.load()['series'] for p in s['span']))
+            beta_data = self.load()
+        self.assertTrue(all(len(s['cp'])==9 and len(s['span'])==9 for s in beta_data['series']))
+        self.assertTrue(all(p['cl'] is None and p['lift'] is None for s in beta_data['series'] for p in s['span']))
+        self.assertTrue(any('beta=0' in issue['details'] for issue in beta_data['issues']))
 
     def test_curve_metadata_and_malformed_numeric_rows(self):
         self.assertEqual(len(dist.parse_curve(self.component / 'section_state1_station0.000')), 81)
@@ -237,7 +294,7 @@ class DistributionTests(unittest.TestCase):
             launcher._run_generation_job('synthetic-reuse', self.payload)
         result = launcher.job_snapshot('synthetic-reuse')['result']
         self.assertEqual(result['reused_polars'], 2)
-        self.assertEqual(result['distributions'], {'parsed': 0, 'cached': 118})
+        self.assertEqual(result['distributions'], {'parsed': 0, 'cached': 108})
         before = {name: (output/name).read_bytes() for name in ('dashboard.html', 'dashboard.json')}
         with patch.object(engine, 'write_html', side_effect=OSError('injected writer failure')), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

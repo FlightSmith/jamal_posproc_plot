@@ -22,7 +22,10 @@ git add jamal_dashboard CODEX_CONTEXT.md
 git commit -m "Describe the change"
 ```
 
-This is a local repository. No remote is configured and nothing is published.
+The GitHub repository is https://github.com/FlightSmith/jamal_posproc_plot.
+It was transferred from maxt800; origin should use the FlightSmith URL. Approved
+changes are committed and pushed to main. Runtime ZIPs remain local artifacts
+excluded from Git.
 
 ## Windows ownership check
 

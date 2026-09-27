@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 
-APP_VERSION = "v25.8.1"
+APP_VERSION = "v25.9"
 ENGINE_FILENAME = "jamal_polar_convergence_dashboard_v25.py"
 MAX_CONFIGURATIONS = 5
 DEFAULT_OUTPUT_NAME = "dashboard"
@@ -344,6 +344,9 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         folders = list(dict.fromkeys(folders))
         if not polars:
             raise ValueError(f"{label}: select at least one POLAR.")
+        distribution_input = cfg.get('distribution_input', 'pressure')
+        if distribution_input not in ('pressure', 'cp'):
+            raise ValueError(f'{label}: distribution input must be pressure or cp.')
         normalized.append({
             "label": label,
             "base_directory": str(base_dir),
@@ -352,6 +355,7 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             "polars": polars,
             "drag_rise_dir": folders[0] if folders else None,
             "drag_rise_dirs": folders,
+            "distribution_input": distribution_input,
         })
     return normalized
 
@@ -526,6 +530,7 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         _set_job(job_id, percent=82, phase="Building derived results", message="Computing static margin, classifications, outliers, provenance, and integrity checks.")
         sm_df = ENGINE.compute_all_static_margin(adf_polars)
         adf_data = ENGINE.make_adf_plot_rows(adf_polars, sm_df)
+        ENGINE.jamal_distributions.attach_global_lift(distribution_data, adf_data)
         conv_rows = ENGINE.attach_adf_coefficients_to_convergence(conv_rows, adf_data)
         conv_rows = ENGINE.add_neighbor_consistency(conv_rows)
         case_configs = [ENGINE.CaseConfig(label=cfg["label"], directory=Path(cfg["adf_directory"]), polars=cfg["polars"], drag_rise_dir=cfg.get("drag_rise_dir"), drag_rise_dirs=cfg.get('drag_rise_dirs')) for cfg in normalized]
@@ -807,6 +812,7 @@ function configCard(id, data={}) {
     <div class="config-head"><h2>Configuration ${id}</h2><button class="danger" onclick="removeConfiguration(${id})">Remove</button></div>
     <div class="grid">
       <div class="field"><label>Label</label><input id="label-${id}" value="${esc(label)}"></div>
+      <div class="field"><label for="dist-input-${id}">Distribution file values</label><select id="dist-input-${id}" onchange="persistDraft()"><option value="pressure" ${data.distribution_input!=='cp'?'selected':''}>Absolute pressure [Pa]</option><option value="cp" ${data.distribution_input==='cp'?'selected':''}>Legacy Cp (already normalized)</option></select></div>
       <div class="field"><label>JAMAL base directory</label>
         <div class="path-row"><input id="path-${id}" value="${esc(data.base_directory||data.directory||'')}" placeholder="Z:\\...\\CFD">
         <button onclick="browseDirectory(${id})">Browse</button><button onclick="scanDirectory(${id})">Scan</button></div>
@@ -878,7 +884,7 @@ function selectedPolars(id) { return [...document.querySelectorAll(`.polar-check
 function updateCount(id) { const n=selectedPolars(id).length; document.getElementById(`count-${id}`).textContent=`${n} selected`; persistDraft(); }
 function serializeSetup() {
   return {version:'v25',configurations:[...configs.keys()].map(id=>({
-    label:document.getElementById(`label-${id}`).value.trim(),base_directory:document.getElementById(`path-${id}`).value.trim(),polars:selectedPolars(id),drag_rise_dirs:Array.from(document.getElementById(`drag-${id}`)?.selectedOptions||[]).map(option=>option.value)
+    label:document.getElementById(`label-${id}`).value.trim(),base_directory:document.getElementById(`path-${id}`).value.trim(),polars:selectedPolars(id),drag_rise_dirs:Array.from(document.getElementById(`drag-${id}`)?.selectedOptions||[]).map(option=>option.value),distribution_input:document.getElementById(`dist-input-${id}`).value
   }))};
 }
 function saveSetup() {
