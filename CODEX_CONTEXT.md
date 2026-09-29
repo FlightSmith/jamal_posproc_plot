@@ -1,4 +1,38 @@
-# Current approved update: v25.10 (2026-09-28)
+# Current approved update: v25.10.1 performance (2026-09-29)
+
+User reports Generate / Update taking about 30–60 minutes for 21 states on a
+different computer, with inputs on a network share. The production folder is not
+available here. Investigation found repeated quadratic contour validation,
+redundant remote metadata calls and verbose report serialization. v25.10.1 now
+uses conservative segment bounding-box candidates with the unchanged exact
+intersection test, caches validated topology by every ordered geometry point and
+algorithm version, reuses directory-entry metadata, and writes compact JSON.
+Pressure quadrature, Cp conversion, flow/ALPHA projection and protected scientific
+calculations are unchanged. No points are removed or approximated.
+
+The launcher now has an optional global Dashboard output directory, saved with
+the setup/draft. Selecting a local folder places both reports and .jamal_cache
+there; blank preserves the first input's 03-RESULTS/DASHBOARD default. Output/cache
+paths and generation-stage timings are visible in the job log, with distribution
+subtimings and geometry cache counts. Shorter temporary cache filenames reduce
+Windows path-length overhead. Existing staging ACL inheritance/rollback remains.
+
+93 tests pass, plus the independent screenshot validator (45,225 samples,
+75 sections, 21 targets, 104 source hashes). Scientific distribution output is
+exactly equal to approved bb3b6fe. Sample warm reader 0.613 -> 0.092 seconds;
+complete warm generation 1.370 -> 0.627 seconds. Dense contour validation improves
+11–39 times on 603–2,406-point examples. A separate 21-state / nine-station /
+2,406-point local stress run verifies 454,734 Cp values and analytical forces:
+6.75 seconds first generation, 5.80 seconds update. These are local synthetic
+measurements, not a promise for the user's network data. See VALIDATION_v25_10_1.md.
+
+The user approved committing and pushing this update to GitHub main.
+Production-computer verification remains pending.
+Essential-file package: JAMAL_Dashboard_v25.10.1_Real_Environment.zip. Previous
+approved packages are preserved. Portable/offline work remains deferred; real
+network-share ACL confirmation is still pending. Unrelated local files untouched.
+
+# Previous approved update: v25.10 (2026-09-28)
 
 The user approved committing and pushing v25.10 plus the screenshot-inspired
 synthetic dataset, and rebuilding the runtime ZIP in the repository root.

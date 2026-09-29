@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 
-APP_VERSION = "v25.10"
+APP_VERSION = "v25.10.1"
 ENGINE_FILENAME = "jamal_polar_convergence_dashboard_v25.py"
 MAX_CONFIGURATIONS = 5
 DEFAULT_OUTPUT_NAME = "dashboard"
@@ -231,7 +231,7 @@ def scan_base_directory(raw_path: str) -> Dict[str, Any]:
     }
 
 
-def choose_directory(initial_directory: Optional[str] = None) -> str:
+def choose_directory(initial_directory: Optional[str] = None, *, output: bool = False) -> str:
     """Open a native folder dialog when Tk is available."""
     try:
         import tkinter as tk
@@ -246,7 +246,7 @@ def choose_directory(initial_directory: Optional[str] = None) -> str:
             if candidate.exists():
                 initial = str(candidate)
         selected = filedialog.askdirectory(
-            title="Select JAMAL base directory",
+            title="Select dashboard output directory" if output else "Select JAMAL base directory",
             initialdir=initial,
             mustexist=True,
         )
@@ -260,6 +260,8 @@ def choose_directory(initial_directory: Optional[str] = None) -> str:
 
 
 def output_directory(configurations: List[Dict[str, Any]]) -> Path:
+    if configurations[0].get("output_directory"):
+        return Path(configurations[0]["output_directory"])
     first_base = resolve_base_directory(configurations[0]["base_directory"])
     return first_base / "03-RESULTS" / "DASHBOARD"
 
@@ -323,6 +325,14 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     if len(configurations) > MAX_CONFIGURATIONS:
         raise ValueError(f"A maximum of {MAX_CONFIGURATIONS} configurations is supported.")
 
+    requested_output = str(payload.get("output_directory") or "").strip().strip('"')
+    output_override = None
+    if requested_output:
+        output_path = Path(requested_output).expanduser()
+        if not output_path.is_absolute():
+            raise ValueError("Dashboard output directory must be an absolute path.")
+        output_override = str(output_path.resolve())
+
     normalized: List[Dict[str, Any]] = []
     labels = set()
     for index, cfg in enumerate(configurations, start=1):
@@ -356,6 +366,7 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             "drag_rise_dir": folders[0] if folders else None,
             "drag_rise_dirs": folders,
             "distribution_input": distribution_input,
+            "output_directory": output_override,
         })
     return normalized
 
@@ -456,7 +467,18 @@ def _drag_rise_incremental(normalized: List[Dict[str, Any]], cache_dir: Path, fo
 
 
 def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
-    started = time.time()
+    started = time.perf_counter()
+    phase_started = started
+    timings: Dict[str, float] = {}
+
+    def finish_phase(name: str) -> None:
+        nonlocal phase_started
+        finished = time.perf_counter()
+        timings[name] = finished - phase_started
+        phase_started = finished
+        _set_job(job_id, timings_seconds=dict(timings))
+        _job_log(job_id, f"Timing · {name.replace('_', ' ')}: {timings[name]:.3f} s")
+
     try:
         _set_job(job_id, status="running", percent=2, phase="Validating configuration", message="Resolving JAMAL base folders and selected POLARs.")
         normalized = _normalize_configurations(payload)
@@ -465,12 +487,15 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         cache_dir = output_dir / ".jamal_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
+        _set_job(job_id, output_directory=str(output_dir), cache_directory=str(cache_dir))
+        _job_log(job_id, f"Output directory: {output_dir}\nCache directory: {cache_dir}")
 
         _set_job(job_id, percent=7, phase="Building update plan", message="Checking selected source timestamps against the persistent cache.")
         plan = _build_update_plan(normalized, cache_dir, force)
         plan_counts = {name: sum(1 for item in plan if item["action"] == name) for name in ("new", "modified", "cached", "rebuild")}
         _set_job(job_id, plan=plan_counts)
         _job_log(job_id, "Update plan: " + " · ".join(f"{key}={value}" for key, value in plan_counts.items()))
+        finish_phase("scanning")
 
         adf_polars = []
         summaries = []
@@ -519,13 +544,22 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
             conv_rows.extend(rows)
             history.update(polar_history)
 
+        finish_phase("polars")
+
         _set_job(job_id, percent=73, phase="Processing drag rise", message="Loading only new or modified drag-rise files.")
         drag_rise_data, drag_counts = _drag_rise_incremental(normalized, cache_dir, force, job_id)
+        finish_phase("drag_rise")
 
         _set_job(job_id, percent=78, phase="Processing distributions", message="Reading selected components and changed distribution files.")
         distribution_data = ENGINE.jamal_distributions.read_distributions(
             normalized, summaries, ENGINE.parse_infout, cache_dir / 'distributions', force,
             lambda message: _set_job(job_id, message=message))
+        finish_phase("distributions")
+        _job_log(job_id, 'Distribution timings · ' + ' · '.join(
+            f'{name.replace("_", " ")}={seconds:.3f}s'
+            for name, seconds in distribution_data.get('timings_seconds', {}).items()))
+        _job_log(job_id, 'Geometry cache · ' + ' · '.join(
+            f'{name}={count}' for name, count in distribution_data.get('topology_cache', {}).items()))
 
         _set_job(job_id, percent=82, phase="Building derived results", message="Computing static margin, classifications, outliers, provenance, and integrity checks.")
         sm_df = ENGINE.compute_all_static_margin(adf_polars)
@@ -540,18 +574,25 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
             integrity_checks = [row for row in integrity_checks if row['severity'] != 'PASS'] + distribution_data['issues']
         provenance['distribution_sources'] = distribution_data['sources']
         provenance['generation_id'] = job_id
+        finish_phase("derived")
 
         json_path = output_dir / "dashboard.json"
         html_path = output_dir / "dashboard.html"
         _set_job(job_id, percent=91, phase="Writing dashboard data", message=str(json_path))
         with _report_staging_directory(output_dir) as stage:
             ENGINE.write_json(stage / json_path.name, summaries, conv_rows, history, adf_data, drag_rise_data, provenance, integrity_checks, distribution_data)
+            finish_phase("json")
             _set_job(job_id, percent=96, phase="Writing standalone dashboard", message=str(html_path))
             ENGINE.write_html(stage / html_path.name, summaries, conv_rows, history, adf_data, drag_rise_data, provenance, integrity_checks, distribution_data)
+            finish_phase("html")
+            _set_job(job_id, percent=98, phase="Validating dashboard", message="Checking generated JSON and HTML before publication.")
             json.loads((stage / json_path.name).read_text(encoding='utf-8'))
             if not (stage / html_path.name).read_text(encoding='utf-8').rstrip().endswith('</html>'):
                 raise ValueError('Generated HTML is incomplete.')
+            finish_phase("validation")
+            _set_job(job_id, percent=99, phase="Publishing dashboard", message=str(output_dir))
             _publish_report_pair(stage, output_dir)
+        finish_phase("publish")
 
         manifest = {
             "cache_schema": CACHE_SCHEMA_VERSION,
@@ -565,17 +606,22 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
             "distributions": distribution_data['counts'],
             "dashboard_html": str(html_path),
             "dashboard_json": str(json_path),
+            "output_directory": str(output_dir),
+            "cache_directory": str(cache_dir),
+            "timings_seconds": dict(timings),
         }
         manifest_temp = cache_dir / f'manifest.{job_id}.tmp'
         manifest_temp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         manifest_temp.replace(cache_dir / 'manifest.json')
 
-        elapsed = time.time() - started
+        elapsed = time.perf_counter() - started
         result = {
             "report_path": str(html_path), "json_path": str(json_path), "report_url": "/report",
             "configurations": normalized, "parsed_polars": parsed_count, "reused_polars": reused_count,
             "drag_rise": drag_counts, "elapsed_seconds": elapsed, "plan": plan_counts,
             "distributions": distribution_data['counts'],
+            "output_directory": str(output_dir), "cache_directory": str(cache_dir),
+            "timings_seconds": dict(timings),
         }
         STATE["last_report"] = html_path
         STATE["last_log"] = STATE["jobs"][job_id].get("log", "")
@@ -786,6 +832,15 @@ input[type="text"] { width:100%; }
     <button id="generateButton" class="primary" onclick="generateDashboard()">Generate / Update dashboard</button>
   </div>
 
+  <div class="panel">
+    <div class="field"><label for="outputDirectory">Dashboard output directory (optional)</label>
+      <div class="path-row" style="grid-template-columns:1fr auto"><input id="outputDirectory" placeholder="C:\JAMAL\Reports\Project" oninput="persistDraft()">
+      <button onclick="browseOutputDirectory()">Browse</button></div>
+    </div>
+    <p class="progress-plan">Choose a local folder to keep generated reports and their cache on this computer. Leave blank to use the first configuration's 03-RESULTS\DASHBOARD folder.</p>
+    <div id="outputPaths" class="progress-plan" style="white-space:pre-wrap;overflow-wrap:anywhere"></div>
+  </div>
+
   <div id="configs"></div>
 
 </main>
@@ -855,6 +910,23 @@ async function browseDirectory(id) {
     else setStatus('Folder selection cancelled.');
   } catch (error) { setStatus(`Browse error: ${error.message}`); }
 }
+async function browseOutputDirectory() {
+  try {
+    const data=await postJson('/api/browse',{initial_directory:document.getElementById('outputDirectory').value,purpose:'output'});
+    if(data.path){document.getElementById('outputDirectory').value=data.path;persistDraft();}
+  } catch(error){setStatus(`Browse error: ${error.message}`);}
+}
+function updateOutputPaths(output, cache) {
+  if(!output){
+    output=document.getElementById('outputDirectory').value.trim();
+    if(!output){
+      const first=configs.keys().next().value;
+      const base=first ? document.getElementById(`path-${first}`).value.trim() : '';
+      output=base ? `${base.replace(/[\\/]+$/,'')}/03-RESULTS/DASHBOARD` : '';
+    }
+  }
+  document.getElementById('outputPaths').textContent=output ? `Output: ${output}\nCache: ${cache||`${output.replace(/[\\/]+$/,'')}/.jamal_cache`}` : 'Output and cache paths will appear after selecting a base directory.';
+}
 async function scanDirectory(id, restorePolars=null, restoreDrag='') {
   const path = document.getElementById(`path-${id}`).value.trim();
   if (!path) { alert('Enter or browse to a directory.'); return; }
@@ -865,7 +937,7 @@ async function scanDirectory(id, restorePolars=null, restoreDrag='') {
     document.getElementById(`path-${id}`).value=data.base_directory;
     document.getElementById(`scan-${id}`).style.display='block';
     document.getElementById(`meta-${id}`).innerHTML=[
-      ['Base',data.base_directory],['ADF',data.adf_directory],['02-RUNS',data.runs_directory],['DRAG-RISE',data.drag_rise_root],['Output',data.dashboard_directory]
+      ['Base',data.base_directory],['ADF',data.adf_directory],['02-RUNS',data.runs_directory],['DRAG-RISE',data.drag_rise_root]
     ].map(v=>`<div class="meta-item"><strong>${v[0]}:</strong> ${esc(v[1])}</div>`).join('');
     const wanted = restorePolars ? new Set(restorePolars.map(Number)) : new Set(data.polars.map(p=>p.number));
     document.getElementById(`polars-${id}`).innerHTML=data.polars.map(p=>{
@@ -883,7 +955,7 @@ function setAllPolars(id, checked) { document.querySelectorAll(`.polar-check-${i
 function selectedPolars(id) { return [...document.querySelectorAll(`.polar-check-${id}:checked`)].map(el=>Number(el.value)); }
 function updateCount(id) { const n=selectedPolars(id).length; document.getElementById(`count-${id}`).textContent=`${n} selected`; persistDraft(); }
 function serializeSetup() {
-  return {version:'v25',configurations:[...configs.keys()].map(id=>({
+  return {version:'v25',output_directory:document.getElementById('outputDirectory').value.trim(),configurations:[...configs.keys()].map(id=>({
     label:document.getElementById(`label-${id}`).value.trim(),base_directory:document.getElementById(`path-${id}`).value.trim(),polars:selectedPolars(id),drag_rise_dirs:Array.from(document.getElementById(`drag-${id}`)?.selectedOptions||[]).map(option=>option.value),distribution_input:document.getElementById(`dist-input-${id}`).value
   }))};
 }
@@ -898,11 +970,12 @@ async function loadSetupFile(event) {
 }
 async function applySetup(payload) {
   document.getElementById('configs').innerHTML=''; configs.clear(); nextId=1;
+  document.getElementById('outputDirectory').value=payload.output_directory||'';
   const list=(payload.configurations||[]).slice(0,MAX_CONFIGS); if(!list.length) list.push({label:'Baseline'});
   for (const item of list) addConfiguration(item);
   persistDraft();
 }
-function persistDraft() { try { localStorage.setItem('JAMAL_v25_source_setup',JSON.stringify(serializeSetup())); } catch (_) {} }
+function persistDraft() { updateOutputPaths(); try { localStorage.setItem('JAMAL_v25_source_setup',JSON.stringify(serializeSetup())); } catch (_) {} }
 function restoreDraft() { try { const text=localStorage.getItem('JAMAL_v25_source_setup'); if(text) return JSON.parse(text); } catch (_) {} return null; }
 let activeJobId = null;
 let progressTimer = null;
@@ -928,11 +1001,12 @@ async function pollGenerationJob() {
     pollFailures=0;
     setProgress(data.percent||0,data.phase||data.status,planText(data.plan||{}));
     setStatus(`${data.phase||'Working'} · ${data.message||''}\n${data.log||''}`);
+    if(data.output_directory) updateOutputPaths(data.output_directory,data.cache_directory);
     if(data.status==='complete') {
       clearInterval(progressTimer); progressTimer=null; activeJobId=null;
       const r=data.result||{};
       setProgress(100,'Complete',`POLARs: parsed ${r.parsed_polars||0} · reused ${r.reused_polars||0} | Distribution files: parsed ${r.distributions?.parsed||0} · reused ${r.distributions?.cached||0} | ${(r.elapsed_seconds||0).toFixed(1)} s`);
-      document.getElementById('resultPath').innerHTML=`Standalone dashboard: <strong>${esc(r.report_path||'')}</strong><br>Data snapshot: <strong>${esc(r.json_path||'')}</strong>`;
+      document.getElementById('resultPath').innerHTML=`Standalone dashboard: <strong>${esc(r.report_path||'')}</strong><br>Data snapshot: <strong>${esc(r.json_path||'')}</strong><br>Cache: <strong>${esc(r.cache_directory||'')}</strong>`;
       document.getElementById('result').style.display='block';
       document.getElementById('generateButton').disabled=false; persistDraft(); return;
     }
@@ -1044,7 +1118,7 @@ class JamalRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if path == "/api/browse":
-                selected = choose_directory(payload.get("initial_directory"))
+                selected = choose_directory(payload.get("initial_directory"), output=payload.get("purpose") == "output")
                 self._json({"path": selected})
                 return
             if path == "/api/scan":

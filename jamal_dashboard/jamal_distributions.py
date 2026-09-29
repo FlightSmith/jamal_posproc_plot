@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 
 VERSION = '0.4 multi-element pressure integration'
+TOPOLOGY_CACHE_VERSION = 1
 STATION_TOLERANCE = 1e-6  # metres
 NUMBER = r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][-+]?\d+)?'
 STATION_PATTERN = re.compile(rf'^(section|cp_dist)_state([1-9]\d*)_station({NUMBER})$', re.I)
@@ -61,15 +63,16 @@ def parse_force(path):
     return rows
 
 
-def fingerprint(path):
-    stat = path.stat()
-    return {'path': str(path.resolve()), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+def fingerprint(path, stat=None, resolved_path=None):
+    stat = path.stat() if stat is None else stat
+    return {'path': str(path.resolve()) if resolved_path is None else str(resolved_path),
+            'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
 
 
-def cached_parse(path, kind, cache_dir, force, counts):
+def cached_parse(path, kind, cache_dir, force, counts, source=None):
     """Cache raw geometry and per-state inputs independently from aerodynamic caches."""
-    before = fingerprint(path)
-    key = hashlib.sha256(str(path.resolve()).encode('utf-8')).hexdigest()
+    before = fingerprint(path) if source is None else source
+    key = hashlib.sha256(before['path'].encode('utf-8')).hexdigest()
     target = cache_dir / kind / (key + '.json')
     if not force:
         try:
@@ -84,10 +87,10 @@ def cached_parse(path, kind, cache_dir, force, counts):
         except (OSError, ValueError, KeyError, TypeError):
             pass
     data = parse_force(path) if kind == 'forces' else parse_curve(path)
-    if fingerprint(path) != before:
+    if fingerprint(path, resolved_path=before['path']) != before:
         raise ValueError(f'{path.name}: source changed during parsing; retry generation')
     target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=key, suffix='.tmp', dir=target.parent)
+    descriptor, name = tempfile.mkstemp(prefix=key[:12]+'.', suffix='.tmp', dir=target.parent)
     temp = Path(name)
     try:
         with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
@@ -97,6 +100,137 @@ def cached_parse(path, kind, cache_dir, force, counts):
         temp.unlink(missing_ok=True)
     counts['parsed'] += 1
     return data, before
+
+
+def cached_topology(geometry, cache_dir, force=False, memo=None, counts=None):
+    """Reuse exact validated coordinates, without caching pressure or flow results.
+
+    The geometry digest includes every original ordered row. The algorithm version
+    invalidates old validation decisions; a result checksum detects damaged caches.
+    Cache writes are optional: an unavailable cache must not remove valid loads.
+    """
+    encoded = json.dumps(geometry, separators=(',', ':'), allow_nan=False)
+    key = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+    memo = {} if memo is None else memo
+    counts = {} if counts is None else counts
+    def counted(name):
+        counts[name] = counts.get(name, 0)+1
+    if key in memo:
+        counted('reused')
+        value = memo[key]
+        if isinstance(value, str):
+            raise ValueError(value)
+        return value
+    target = Path(cache_dir) / 'topology' / (key+'.json')
+    if not force:
+        try:
+            cached = json.loads(target.read_text(encoding='utf-8'))
+            value = cached['topology']
+            checksum = hashlib.sha256(json.dumps(value, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+            valid = (cached['version'] == TOPOLOGY_CACHE_VERSION and cached['geometry'] == key
+                     and cached['checksum'] == checksum and isinstance(value, list) and bool(value)
+                     and [i for e in value for i in e['indices']] == list(range(len(geometry))))
+            if valid:
+                for element in value:
+                    indices = element['indices']
+                    index_set = set(indices)
+                    valid = (valid and len(indices) >= 4 and all(type(i) is int for i in indices)
+                             and element['direction'] in (-1, 1) and isinstance(element['id'], str)
+                             and isinstance(element['name'], str) and isinstance(element['surfaces'], dict)
+                             and {'upper', 'lower'} <= element['surfaces'].keys()
+                             and all(isinstance(branch, list) and bool(branch)
+                                     and all(type(i) is int and i in index_set for i in branch)
+                                     for branch in element['surfaces'].values()))
+            if valid:
+                counted('cached')
+                memo[key] = value
+                return value
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    counted('validated')
+    try:
+        value = section_topology(geometry)
+    except ValueError as error:
+        memo[key] = str(error)
+        raise
+    memo[key] = value
+    temporary = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(prefix=key[:12]+'.', suffix='.tmp', dir=target.parent)
+        temporary = Path(name)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+            checksum = hashlib.sha256(json.dumps(value, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+            json.dump({'version': TOPOLOGY_CACHE_VERSION, 'geometry': key,
+                       'checksum': checksum, 'topology': value}, output, separators=(',', ':'), allow_nan=False)
+        temporary.replace(target)
+    except OSError:
+        counted('write_failed')
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return value
+
+
+def _segment_boxes_overlap(a, b, tolerance):
+    """The conservative bounding-box rejection used by the exact predicate."""
+    return not (a[1]+tolerance < b[0] or b[1]+tolerance < a[0]
+                or a[3]+tolerance < b[2] or b[3]+tolerance < a[2])
+
+
+def _segment_box_candidates(segments, tolerance, other_segments=None):
+    """Yield all potentially touching pairs without scanning every segment pair.
+
+    A bounding-box hierarchy prunes disjoint groups in both coordinates. Unlike
+    an X-only sweep, this also handles densely sampled vertical cove walls. Box
+    overlap is only a broad-phase test; callers retain the exact intersection
+    predicate. Self-pairs are unique with i < j; cross-pairs retain input order.
+    """
+    def build(items):
+        bounds = (min(p[0] for p in items), max(p[1] for p in items),
+                  min(p[2] for p in items), max(p[3] for p in items))
+        if len(items) <= 8:
+            return bounds, None, None, items, len(items)
+        axis = 0 if bounds[1]-bounds[0] >= bounds[3]-bounds[2] else 2
+        ordered = sorted(items, key=lambda p: p[axis]/2+p[axis+1]/2)
+        middle = len(ordered)//2
+        return bounds, build(ordered[:middle]), build(ordered[middle:]), None, len(items)
+
+    def tree(source):
+        return build([(min(a[0],b[0]), max(a[0],b[0]),
+                       min(a[1],b[1]), max(a[1],b[1]), i)
+                      for i,(a,b) in enumerate(source)])
+
+    def pairs(left, right, same=False):
+        if not _segment_boxes_overlap(left[0], right[0], tolerance):
+            return
+        if left[3] is not None and right[3] is not None:
+            for i,a in enumerate(left[3]):
+                for b in (right[3][i+1:] if same else right[3]):
+                    if _segment_boxes_overlap(a, b, tolerance):
+                        yield a[4], b[4]
+        elif same:
+            yield from pairs(left[1], left[1], True)
+            yield from pairs(left[1], left[2])
+            yield from pairs(left[2], left[2], True)
+        elif right[3] is not None or (left[3] is None and left[4] >= right[4]):
+            yield from pairs(left[1], right)
+            yield from pairs(left[2], right)
+        else:
+            yield from pairs(left, right[1])
+            yield from pairs(left, right[2])
+
+    if not segments or (other_segments is not None and not other_segments):
+        return
+    first = tree(segments)
+    if other_segments is None:
+        for i,j in pairs(first, first, True):
+            yield (i,j) if i<j else (j,i)
+    else:
+        yield from pairs(first, tree(other_segments))
 
 
 def section_topology(geometry):
@@ -171,12 +305,19 @@ def section_topology(geometry):
         if n < 3:
             raise ValueError(f'element {number} has fewer than three distinct vertices')
         segments = list(zip(vertices,vertices[1:]+vertices[:1]))
+        first_intersection = n
+        for i,j in _segment_box_candidates(segments, tol):
+            if j==i+1 or (i==0 and j==n-1) or i>=first_intersection:
+                continue
+            if intersects(*segments[i],*segments[j]):
+                first_intersection = i
+                if i==0:
+                    break
         for i,(a,b) in enumerate(segments):
-            for j in range(i+1,n):
-                if j==i+1 or (i==0 and j==n-1):
-                    continue
-                if intersects(a,b,*segments[j]):
-                    raise ValueError(f'element {number} contour intersects or touches itself')
+            # Preserve the original error precedence relative to adjacent
+            # backtracking, independently of the hierarchy's traversal order.
+            if i==first_intersection:
+                raise ValueError(f'element {number} contour intersects or touches itself')
             c = vertices[(i+2)%n]
             if abs(cross(a,b,c)) <= tol*max(math.dist(a,b),math.dist(b,c)) and (
                     (a[0]-b[0])*(c[0]-b[0])+(a[1]-b[1])*(c[1]-b[1]) > tol*tol):
@@ -233,7 +374,8 @@ def section_topology(geometry):
         return inside
     for i,(vertices,segments) in enumerate(polygons):
         for other,edges in polygons[i+1:]:
-            if (any(intersects(a,b,c,d) for a,b in segments for c,d in edges)
+            if (any(intersects(*segments[a],*edges[b])
+                    for a,b in _segment_box_candidates(segments, tol, edges))
                     or contains(vertices,other[0]) or contains(other,vertices[0])):
                 raise ValueError('element contours intersect, touch or overlap; separate non-overlapping solids are required')
     return result
@@ -300,6 +442,21 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
     result = {'version': VERSION, 'station_tolerance': STATION_TOLERANCE,
               'series': [], 'issues': [], 'sources': [], 'counts': {'parsed': 0, 'cached': 0},
               'validation': 'Synthetic fixture verified; production validation pending'}
+    topology_memo, topology_counts = {}, {}
+    result['topology_cache'] = topology_counts
+    timings = {name: 0.0 for name in ('infout', 'inventory', 'input_read', 'geometry', 'pressure')}
+    result['timings_seconds'] = timings
+
+    def timed(name, function, *args, **kwargs):
+        started = time.perf_counter()
+        try:
+            return function(*args, **kwargs)
+        finally:
+            timings[name] += time.perf_counter()-started
+
+    def directory_entries(path):
+        with os.scandir(path) as entries:
+            return list(entries)
 
     def issue(cfg, polar, component, state, message):
         result['issues'].append({'severity': 'WARNING', 'configuration': cfg['label'],
@@ -313,12 +470,14 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
             if not root.is_dir():
                 continue  # Optional module; no DISTCLCP is not an error.
             try:
-                info = parse_infout(Path(cfg['runs_directory']) / polar / 'infout')
+                info = timed('infout', parse_infout, Path(cfg['runs_directory']) / polar / 'infout')
             except (OSError, ValueError, KeyError, IndexError) as error:
                 issue(cfg, polar, 'All components', 'all', f'infout unavailable: {error}')
                 continue
             meta, cases = info['meta'], info['cases']
-            components = sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name)
+            components = sorted((Path(entry.path) for entry in timed('inventory', directory_entries, root)
+                                 if not entry.is_symlink() and entry.is_dir(follow_symlinks=False)),
+                                key=lambda p: p.name)
             for component in components:
                 if progress:
                     progress(f"{cfg['label']} Â· {polar} Â· {component.name}")
@@ -345,18 +504,26 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
                         span_reference = None
                         planar_geometry = False
                         issue(cfg, polar, component.name, 'all', f'invalid component span reference: {exc}')
-                for path in sorted(component.iterdir()):
-                    if not path.is_file() or path.is_symlink():
-                        continue
-                    station_match = STATION_PATTERN.fullmatch(path.name)
+                # Directory entries retain file metadata on Windows. Resolve the
+                # parent once instead of repeatedly resolving every remote file.
+                resolved_component = timed('inventory', component.resolve)
+                files = sorted(timed('inventory', directory_entries, component), key=lambda entry: entry.name)
+                for file_index, entry in enumerate(files, 1):
+                    station_match = STATION_PATTERN.fullmatch(entry.name)
                     if not station_match:
                         continue
+                    if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                        continue
+                    path = Path(entry.path)
                     state = int(station_match.group(2))
                     kind = 'geometry' if station_match.group(1).lower() == 'section' else 'cp'
                     if kind == 'geometry' and state != 1:
                         continue
                     try:
-                        rows, source = cached_parse(path, kind, cache_dir, force, result['counts'])
+                        source = fingerprint(path, stat=entry.stat(follow_symlinks=False),
+                                             resolved_path=resolved_component / entry.name)
+                        rows, source = timed('input_read', cached_parse, path, kind, cache_dir, force,
+                                             result['counts'], source=source)
                         result['sources'].append({**source, 'configuration': cfg['label'], 'polar': polar,
                                                   'component': component.name, 'kind': kind, 'state': state})
                         if kind == 'geometry':
@@ -371,6 +538,8 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
                             cps.setdefault(state, []).append((finite_number(station_match.group(3)), rows))
                     except (OSError, ValueError, UnicodeError) as exc:
                         issue(cfg, polar, component.name, state, f'{path.name}: {exc}')
+                    if progress and (file_index % 25 == 0 or file_index == len(files)):
+                        progress(f"{cfg['label']} · {polar} · {component.name}: reading files {file_index}/{len(files)}")
 
                 geometry.sort(key=lambda g: g['y'])
                 duplicate_geometry = {g['y'] for g in geometry
@@ -386,6 +555,8 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
                 for unexpected in set(cps) - set(range(1, len(cases) + 1)):
                     issue(cfg, polar, component.name, unexpected, 'state has no matching infout case; omitted')
                 for state, case in enumerate(cases, 1):
+                    if progress:
+                        progress(f"{cfg['label']} · {polar} · {component.name}: pressure state {state}/{len(cases)}")
                     series = {'configuration': cfg['label'], 'polar': polar, 'component': component.name,
                               'state': state, 'case': case['case'], 'alpha': case['alpha'], 'beta': case['beta'],
                               'mach': case['mach'], 'reynolds': case['reynolds'], 'bref': meta.get('bref'),
@@ -434,13 +605,15 @@ def read_distributions(configurations, summaries, parse_infout, cache_dir, force
                         try:
                             if g['y'] not in topologies:
                                 try:
-                                    topologies[g['y']] = section_topology(outline)
+                                    topologies[g['y']] = timed('geometry', cached_topology, outline, cache_dir,
+                                                              force, topology_memo, topology_counts)
                                 except ValueError as error:
                                     topologies[g['y']] = str(error)
                             topology = topologies[g['y']]
                             if isinstance(topology, str):
                                 raise ValueError(topology)
-                            pressure = pressure_section(points, outline, meta.get('p'), q, series['input_kind'], topology=topology)
+                            pressure = timed('pressure', pressure_section, points, outline, meta.get('p'), q,
+                                             series['input_kind'], topology=topology)
                             cp['elements'] = pressure['elements']
                             if 'surfaces' in pressure:
                                 cp['surfaces'] = pressure['surfaces']

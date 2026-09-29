@@ -1,9 +1,35 @@
-# JAMAL Aerodynamic Results Dashboard v25.10
+# JAMAL Aerodynamic Results Dashboard v25.10.1
 
-Approved release. For runtime installation, see [QUICK_START.txt](QUICK_START.txt)
-and [requirements.txt](requirements.txt). The runtime ZIP is generated in the
-repository root and includes a release commit/file manifest. Python and internet
+Approved performance update, awaiting production-computer verification. The previous
+release is v25.10. For runtime installation, see [QUICK_START.txt](QUICK_START.txt)
+and [requirements.txt](requirements.txt). The essential-file runtime ZIP is
+generated in the repository root. Python and internet
 access for Plotly remain required; this release retains the Python/browser launcher.
+
+## Generate / Update performance (v25.10.1)
+
+For network inputs, select a short **local Dashboard output directory**, such as
+`C:\JAMAL\Reports\Project`. Both reports and their `.jamal_cache` are written there.
+The input directory remains your CFD base folder. Blank output preserves the
+existing first configuration's `03-RESULTS\DASHBOARD` location; installing the
+application locally does not by itself move reports or cache. The optional output
+choice is saved in setup files and the launcher draft. Use a separate output
+folder for each project, and normally leave **Force full rebuild** unchecked.
+
+Geometry validation now prunes disjoint edge pairs before the unchanged exact
+intersection test, and unchanged ordered geometry reuses validated topology across
+states, stations and updates. Changed coordinates or validation versions require
+new validation. Pressure/flow calculations remain fresh, preserving every point,
+surface and pressure-force integration. Input inventory avoids repeatedly
+resolving remote file paths. JSON uses compact whitespace without losing precision.
+
+The generation log displays actual output/cache paths, stage timings and geometry
+cache counts. On the next production run, these distinguish file access, geometry
+work, pressure integration and report writing. The original small local fixture's
+unchanged update decreased from 1.37 to 0.63 seconds; a larger local synthetic
+21-state test takes 6.75 seconds initially and 5.80 seconds on update. Network
+performance remains unmeasured. **93 tests pass**; see
+[performance validation](VALIDATION_v25_10_1.md).
 
 ## Multi-element sections (v25.10)
 
@@ -104,7 +130,8 @@ Existing iteration-history scales and protected scientific calculations are unch
 
 Keep the new `distribution_interpolation.js` beside the existing Python, HTML,
 and JavaScript assets; it is embedded when reports are generated. Current suite:
-**71 passing tests**. See [v25.10 validation](VALIDATION_v25_10.md) and the
+**93 passing tests**. See [v25.10 validation](VALIDATION_v25_10.md),
+[performance validation](VALIDATION_v25_10_1.md), and the
 [multi-element design and input contract](MULTIELEMENT_PROPOSAL.md).
 
 ## Earlier updates

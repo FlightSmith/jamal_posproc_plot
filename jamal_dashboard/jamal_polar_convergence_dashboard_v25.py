@@ -121,7 +121,7 @@ FLUENT_LOG_NAMES = [
 ]
 
 # Module versions shown in the dashboard and JSON output.
-SCRIPT_VERSION = "v25.10"
+SCRIPT_VERSION = "v25.10.1"
 MODULE_VERSIONS = {
     "infout parser": "1.4",
     "Distributions": jamal_distributions.VERSION,
@@ -1472,7 +1472,7 @@ def write_json(path, summaries, rows, history, adf_data, drag_rise_data, provena
         "integrity_checks": integrity_checks,
         "distributions": distribution_data or {"series": [], "issues": []},
     }
-    Path(path).write_text(json.dumps(json_safe(payload), indent=2), encoding="utf-8")
+    Path(path).write_text(json.dumps(json_safe(payload), separators=(',', ':')), encoding="utf-8")
 
 
 def write_static_margin_csv(path, sm_df):
