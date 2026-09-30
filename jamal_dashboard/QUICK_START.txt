@@ -1,44 +1,55 @@
-JAMAL Dashboard v25.10.1
-
+JAMAL Dashboard v25.11
 Source: https://github.com/FlightSmith/jamal_posproc_plot
-This approved performance update is pending production-computer verification.
 
-1. Extract the entire runtime ZIP. Keep all files together.
-2. Install Python 3.11 or newer (validation used Python 3.12).
-   Open PowerShell in the extracted folder and run:
+Keep all application files together. Python 3.11 or newer is required
+(validation used Python 3.12). Run Python on the machine storing the CFD data.
 
-   py -3 -m venv .venv
-   .venv\Scripts\python.exe -m pip install -r requirements.txt
+Linux setup, from the extracted application folder:
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -r requirements.txt
 
-   If the py command is unavailable, use python in the first command.
-3. Double-click START_DASHBOARD.cmd. Keep its terminal open while using JAMAL.
-   The default browser opens at the displayed local URL, normally port 8765.
-4. Select the CFD base folder (containing 02-RUNS and 03-RESULTS), scan and
-   select POLARs. For network inputs, set Dashboard output directory to a short
-   local folder such as C:\JAMAL\Reports\Project. Then Generate / Update dashboard.
-   Leave Force full rebuild unchecked for normal updates.
-5. Distribution file values default to Absolute pressure [Pa]. Use Legacy Cp
-   only for already normalized files. Cp = (p_local - infout p[Pa]) / qdin[Pa].
-   total_force files are ignored. Missing p or positive qdin prevents conversion.
-6. Multi-element section and pressure files must use matching point order.
-   Each element closes at its starting X AND ordinate before the next begins.
-   Repeated X and cove walls are retained; hover identifies element/surface.
-   Pressure forces are summed, projected at ALPHA, and normalized using the
-   overall section chord across all elements. See README.md for conventions.
-7. In Distributions, Add overlay for comparison sources, then compare at ALPHA
-   or CL (global Stability CLS). Shared manual Cp limits are optional.
+Start with one or more configuration names and base directories:
+  .venv/bin/python jamal_dashboard_launcher_v25.py baseline "/path/to/jamal/base/dir" config_2 "/path/to/jamal/base/dir2"
 
-Reports and caches use the selected output directory. If it is blank, they use
-the first configuration's 03-RESULTS\DASHBOARD folder. Use a separate output folder
-for each project. The generation log shows actual paths and stage timings.
-The synthetic validation data is distributed
-separately; it is not required to run the application on your own CFD results.
+Use up to five NAME PATH pairs separated by spaces, without commas. Quote paths
+or names containing spaces. A single PATH uses the name Baseline. With no pairs,
+Baseline uses the directory you launched Python from, not the script directory.
+Relative paths are also resolved from that launching directory.
 
-Python, installed dependencies and Plotly are not bundled. Chart display needs
-access to https://cdn.plot.ly/plotly-2.35.2.min.js. Portable/offline application
-work remains deferred. This is the existing Python/browser runtime.
+Example when already inside the CFD base folder:
+  /path/to/app/.venv/bin/python /path/to/app/jamal_dashboard_launcher_v25.py
 
-93 regression tests and the separate screenshot-fixture validation pass.
-Protected calculations and staging permission inheritance are preserved.
-Raw production multi-element validation and real network-share confirmation
-remain pending. See VALIDATION_v25_10_1.md for local performance measurements.
+Add --no-browser on a machine where a browser should not open automatically.
+Existing --host and --port options remain available. Tk is not required for
+command-line paths or for typing paths in the launcher. Browse remains optional.
+
+Windows setup, from the extracted application folder:
+  py -3 -m venv .venv
+  .venv\Scripts\python.exe -m pip install -r requirements.txt
+Then run START_DASHBOARD.cmd, optionally with the same NAME PATH pairs.
+Use python instead of py -3 if the Python launcher is unavailable.
+
+On the launcher page:
+1. Supplied names/paths appear and scan automatically. Select the desired POLARs.
+2. Optional plot data controls Cp/loads distributions, Fluent convergence logs,
+   and drag-rise files independently. All are on by default. Uncheck unwanted
+   data to skip its reads, including cached results. Select drag-rise folders
+   when using that module. ADF and required infout references always load.
+3. Generate / Update dashboard. Normally leave Force full rebuild unchecked.
+4. Reports and cache always use the first base folder's 03-RESULTS/DASHBOARD.
+   The previous output-folder setting is ignored. Keep the generation log for
+   actual paths, timings and cache information.
+
+A new launcher process uses its command-line inputs over stale browser settings.
+Refresh within the same process preserves form edits. Save/load setup includes
+the three optional-data choices. Keep the terminal open while using the launcher.
+
+Pressure values default to absolute Pa: Cp=(p_local - infout p[Pa])/qdin[Pa].
+Select Legacy Cp only for already normalized inputs. Multi-element pressure and
+geometry rows must match in order, with each element closing before the next.
+Every pressure sample, force projection and overall reference chord is retained.
+
+Python, dependencies and Plotly are not bundled. Charts require access to
+https://cdn.plot.ly/plotly-2.35.2.min.js. Portable/offline work remains separate.
+112 tests and the independent screenshot-fixture validation pass. No production
+Linux timing or real network-share ACL retest was performed for this release.

@@ -134,7 +134,7 @@ drawDragRisePlots=function(){
   document.getElementById('dragConditions').textContent=panelConditions(curves);
   document.getElementById('dragRiseHeading').textContent=`Drag rise: ΔCD${axis} vs Mach`;
   document.getElementById('dragRiseNote').textContent='Groups use the source filename CL target. Each configuration is referenced to its own lowest-Mach drag; these increments can include effects other than wave drag.';
-  if(!keys.length)document.getElementById('dragRiseNote').textContent='No drag-rise files selected or available.';
+  if(!keys.length)document.getElementById('dragRiseNote').textContent=dragRiseData.skipped ? 'Drag-rise files were not loaded because they were unchecked in the launcher.' : 'No drag-rise files selected or available.';
   specs.forEach((spec,i)=>{
     const group=groups.get(keys[i]),traces=group.map((c,j)=>{
       const rows=c.rows.slice().sort((a,b)=>a.MACH-b.MACH);

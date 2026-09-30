@@ -121,7 +121,7 @@ FLUENT_LOG_NAMES = [
 ]
 
 # Module versions shown in the dashboard and JSON output.
-SCRIPT_VERSION = "v25.10.1"
+SCRIPT_VERSION = "v25.11"
 MODULE_VERSIONS = {
     "infout parser": "1.4",
     "Distributions": jamal_distributions.VERSION,
@@ -1297,8 +1297,36 @@ def process_polar_convergence(case_label, polar_name, polar_path):
     return summary, rows, history
 
 
-def process_optional_convergence(case_label, polar_name, polar_path):
+def process_optional_convergence(case_label, polar_name, polar_path, load_convergence=True):
     """Keep valid ADF data usable when optional run diagnostics are unavailable."""
+    if not load_convergence:
+        # Reference dimensions and case metadata are still needed by coefficient
+        # transformations and pressure distributions. Do not discover a log.
+        infout_path = polar_path / 'infout'
+        info = {"meta": {}, "cases": [], "deflections": {}}
+        reference_error = None
+        try:
+            info = parse_infout(infout_path)
+        except (OSError, ValueError, KeyError, IndexError) as error:
+            reference_error = f"Reference metadata unavailable: {error}"
+            print(f"  WARNING: {reference_error}")
+        files = {"infout": str(infout_path)}
+        if reference_error is None:
+            try:
+                files['infout_modified'] = datetime.fromtimestamp(
+                    infout_path.stat().st_mtime, tz=timezone.utc).isoformat()
+            except OSError:
+                pass
+        summary = {
+            "case_label": case_label, "polar": polar_name, "polar_path": str(polar_path),
+            "meta": info['meta'], "deflections": info.get('deflections', {}),
+            "mesh": {"status": "NOT_AVAILABLE", "warnings": []}, "diagnostics": {},
+            "n_cases_infout": len(info['cases']) if reference_error is None else None,
+            "n_history_blocks": 0, "convergence_skipped": True, "files": files,
+        }
+        if reference_error is not None:
+            summary['reference_unavailable'] = reference_error
+        return summary, [], {}
     try:
         return process_polar_convergence(case_label, polar_name, polar_path)
     except (OSError, ValueError, KeyError, IndexError) as error:
@@ -1401,10 +1429,14 @@ def build_integrity_checks(case_configs, summaries, conv_rows, adf_data, drag_ri
         if reynolds and max(reynolds) - min(reynolds) > max(1.0, 1.0e-6 * abs(np.mean(reynolds))):
             checks.append({"severity": "INFO", "configuration": label, "polar": polar, "check": "Reynolds variation", "details": f"Reynolds varies from {min(reynolds):.5g} to {max(reynolds):.5g}."})
         summary = summary_map.get((label, polar))
-        if summary and summary.get("n_cases_infout") != len(rows):
+        if summary and summary.get("n_cases_infout") is not None and summary.get("n_cases_infout") != len(rows):
             checks.append({"severity": "WARNING", "configuration": label, "polar": polar, "check": "Case count mismatch", "details": f"infout has {summary.get('n_cases_infout')} cases while ADF has {len(rows)} rows."})
 
     for summary in summaries:
+        if summary.get('reference_unavailable'):
+            checks.append({"severity": "WARNING", "configuration": summary['case_label'],
+                           "polar": summary['polar'], "check": "Reference metadata unavailable",
+                           "details": summary['reference_unavailable']})
         if summary.get('convergence_unavailable'):
             checks.append({"severity": "WARNING", "configuration": summary['case_label'],
                            "polar": summary['polar'], "check": "Convergence unavailable",
@@ -1486,6 +1518,14 @@ def write_static_margin_csv(path, sm_df):
 # =============================================================================
 
 def make_html(summaries, conv_rows, history, adf_data, drag_rise_data, provenance, integrity_checks, distribution_data=None):
+    skipped_sources = [label for option, label in (
+        ('load_distributions', 'Cp/load distributions'),
+        ('load_convergence', 'Fluent convergence histories'),
+        ('load_drag_rise', 'drag rise'))
+        if provenance.get('load_options', {}).get(option) is False]
+    load_notice = ('<p class="card small" id="loadOptionsNotice" role="status">'
+                   'Not loaded for this dashboard: ' + ', '.join(skipped_sources) +
+                   '. These sources were unchecked in the launcher.</p>') if skipped_sources else ''
     summaries_json = json.dumps(json_safe(summaries))
     conv_json = json.dumps(json_safe(conv_rows))
     history_json = json.dumps(json_safe(history))
@@ -1657,6 +1697,7 @@ body.density-presentation th, body.density-presentation td {{ padding: 9px; font
   <button data-section="tables" onclick="showSection('tables', this)">Tables</button>
 </div>
 
+{load_notice}
 <details class="card workspace-details" id="summaryPanel">
   <summary>Run summary <span id="compactStatus" class="small"></span></summary>
   <div id="kpis"></div>
@@ -2468,7 +2509,7 @@ function drawKpis(data) {{
   const susp = data.filter(r => r.status === "SUSPICIOUS").length;
   const divg = data.filter(r => r.status === "DIVERGED").length;
   const meshWarn = filteredSummaries().filter(s => ["WARNING", "CRITICAL"].includes((s.mesh || {{}}).status)).length;
-  document.getElementById('compactStatus').textContent=convRows.length?`${{total}} cases · ${{conv}} converged · ${{acc}} acceptable · ${{susp}} suspicious · ${{divg}} diverged`:`${{filteredAdfCurves().length}} ADF polars · Convergence history unavailable`;
+  document.getElementById('compactStatus').textContent=convRows.length?`${{total}} cases · ${{conv}} converged · ${{acc}} acceptable · ${{susp}} suspicious · ${{divg}} diverged`:`${{filteredAdfCurves().length}} ADF polars · ${{provenanceData.load_options?.load_convergence === false ? 'Convergence not loaded' : 'Convergence history unavailable'}}`;
   document.getElementById("kpis").innerHTML = `
     <div class="kpi"><div>Total cases</div><strong>${{total}}</strong></div>
     <div class="kpi"><div>Converged</div><strong>${{conv}}</strong></div>
@@ -3514,7 +3555,17 @@ function applyBuiltInPreset(name){{
 }}
 
 function drawIntegrity(){{document.querySelector("#integrityTable tbody").innerHTML=(integrityData||[]).map(i=>`<tr><td class="integrity-${{i.severity}}">${{i.severity}}</td><td>${{i.configuration}}</td><td>${{i.polar}}</td><td>${{i.check}}</td><td>${{i.details}}</td></tr>`).join("");}}
-function drawProvenance(){{document.getElementById("provenanceSummary").innerHTML=`Generated UTC: <strong>${{provenanceData.generated_utc}}</strong> · Script: <strong>${{provenanceData.script_version}}</strong>`;const rows=[];(provenanceData.adf_files||[]).forEach(f=>rows.push(["ADF",f.configuration,f.polar,f.path,f.modified]));(provenanceData.run_files||[]).forEach(f=>{{rows.push(["infout",f.configuration,f.polar,f.infout,f.infout_modified]);rows.push(["FLUENT_LOG",f.configuration,f.polar,f.fluent_log,f.fluent_log_modified]);}});(provenanceData.drag_rise_files||[]).forEach(f=>rows.push(["Drag rise",f.configuration,f.file_name,f.path,f.modified]));document.querySelector("#provenanceTable tbody").innerHTML=rows.map(r=>`<tr><td>${{r[0]}}</td><td>${{r[1]}}</td><td>${{r[2]}}</td><td>${{r[3]??""}}</td><td>${{r[4]??""}}</td></tr>`).join("");}}
+function drawProvenance(){{
+  document.getElementById("provenanceSummary").innerHTML=`Generated UTC: <strong>${{provenanceData.generated_utc}}</strong> · Script: <strong>${{provenanceData.script_version}}</strong>`;
+  const rows=[];
+  (provenanceData.adf_files||[]).forEach(f=>rows.push(["ADF",f.configuration,f.polar,f.path,f.modified]));
+  (provenanceData.run_files||[]).forEach(f=>{{
+    if(f.infout)rows.push(["infout",f.configuration,f.polar,f.infout,f.infout_modified]);
+    if(f.fluent_log)rows.push(["FLUENT_LOG",f.configuration,f.polar,f.fluent_log,f.fluent_log_modified]);
+  }});
+  (provenanceData.drag_rise_files||[]).forEach(f=>rows.push(["Drag rise",f.configuration,f.file_name,f.path,f.modified]));
+  document.querySelector("#provenanceTable tbody").innerHTML=rows.map(r=>`<tr><td>${{r[0]}}</td><td>${{r[1]}}</td><td>${{r[2]}}</td><td>${{r[3]??""}}</td><td>${{r[4]??""}}</td></tr>`).join("");
+}}
 
 
 drawCoeffPlot = function(data, divId, yKey, title, yTitle) {{

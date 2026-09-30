@@ -50,9 +50,10 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 
-APP_VERSION = "v25.10.1"
+APP_VERSION = "v25.11"
 ENGINE_FILENAME = "jamal_polar_convergence_dashboard_v25.py"
 MAX_CONFIGURATIONS = 5
+LOAD_OPTION_NAMES = ('load_distributions', 'load_convergence', 'load_drag_rise')
 DEFAULT_OUTPUT_NAME = "dashboard"
 
 STATE: Dict[str, Any] = {
@@ -60,6 +61,8 @@ STATE: Dict[str, Any] = {
     "last_log": "",
     "last_error": None,
     "jobs": {},
+    "startup_token": uuid.uuid4().hex,
+    "startup_setup": {},
 }
 JOB_LOCK = threading.Lock()
 GENERATION_LOCK = threading.Lock()
@@ -203,7 +206,7 @@ def shallow_drag_rise_listing(drag_rise_root: Path) -> List[str]:
     return sorted(names, key=natural_key)
 
 
-def scan_base_directory(raw_path: str) -> Dict[str, Any]:
+def scan_base_directory(raw_path: str, load_drag_rise: bool = True) -> Dict[str, Any]:
     """Phase 1: fast, non-recursive discovery from the JAMAL base folder."""
     base_dir = resolve_base_directory(raw_path)
     runs_dir = base_dir / "02-RUNS"
@@ -216,7 +219,7 @@ def scan_base_directory(raw_path: str) -> Dict[str, Any]:
         raise FileNotFoundError(f"ADF directory not found: {adf_dir}")
 
     polars = shallow_polar_listing(adf_dir)
-    drag_rise_dirs = shallow_drag_rise_listing(drag_rise_root)
+    drag_rise_dirs = shallow_drag_rise_listing(drag_rise_root) if load_drag_rise else []
 
     return {
         "base_directory": str(base_dir),
@@ -231,7 +234,7 @@ def scan_base_directory(raw_path: str) -> Dict[str, Any]:
     }
 
 
-def choose_directory(initial_directory: Optional[str] = None, *, output: bool = False) -> str:
+def choose_directory(initial_directory: Optional[str] = None) -> str:
     """Open a native folder dialog when Tk is available."""
     try:
         import tkinter as tk
@@ -246,7 +249,7 @@ def choose_directory(initial_directory: Optional[str] = None, *, output: bool = 
             if candidate.exists():
                 initial = str(candidate)
         selected = filedialog.askdirectory(
-            title="Select dashboard output directory" if output else "Select JAMAL base directory",
+            title="Select JAMAL base directory",
             initialdir=initial,
             mustexist=True,
         )
@@ -260,8 +263,6 @@ def choose_directory(initial_directory: Optional[str] = None, *, output: bool = 
 
 
 def output_directory(configurations: List[Dict[str, Any]]) -> Path:
-    if configurations[0].get("output_directory"):
-        return Path(configurations[0]["output_directory"])
     first_base = resolve_base_directory(configurations[0]["base_directory"])
     return first_base / "03-RESULTS" / "DASHBOARD"
 
@@ -325,14 +326,9 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     if len(configurations) > MAX_CONFIGURATIONS:
         raise ValueError(f"A maximum of {MAX_CONFIGURATIONS} configurations is supported.")
 
-    requested_output = str(payload.get("output_directory") or "").strip().strip('"')
-    output_override = None
-    if requested_output:
-        output_path = Path(requested_output).expanduser()
-        if not output_path.is_absolute():
-            raise ValueError("Dashboard output directory must be an absolute path.")
-        output_override = str(output_path.resolve())
-
+    load_options = {name: payload.get(name, True) for name in LOAD_OPTION_NAMES}
+    if any(type(value) is not bool for value in load_options.values()):
+        raise ValueError('Optional data selections must be true or false.')
     normalized: List[Dict[str, Any]] = []
     labels = set()
     for index, cfg in enumerate(configurations, start=1):
@@ -358,6 +354,7 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         if distribution_input not in ('pressure', 'cp'):
             raise ValueError(f'{label}: distribution input must be pressure or cp.')
         normalized.append({
+            **load_options,
             "label": label,
             "base_directory": str(base_dir),
             "adf_directory": str(adf_dir),
@@ -366,7 +363,6 @@ def _normalize_configurations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             "drag_rise_dir": folders[0] if folders else None,
             "drag_rise_dirs": folders,
             "distribution_input": distribution_input,
-            "output_directory": output_override,
         })
     return normalized
 
@@ -376,7 +372,8 @@ def _polar_source_info(cfg: Dict[str, Any], polar_number: int) -> Dict[str, Any]
     adf_path = Path(cfg["adf_directory"]) / f"{polar_name}.adf"
     run_dir = Path(cfg["runs_directory"]) / polar_name
     infout_path = run_dir / "infout"
-    log_path = ENGINE.find_fluent_log(run_dir)
+    load_convergence = cfg.get('load_convergence', True)
+    log_path = ENGINE.find_fluent_log(run_dir) if load_convergence else None
     missing = [str(path) for path in (adf_path,) if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"{cfg['label']} | {polar_name}: missing source files: {missing}")
@@ -389,7 +386,7 @@ def _polar_source_info(cfg: Dict[str, Any], polar_number: int) -> Dict[str, Any]
         "fingerprints": {
             "adf": _file_fingerprint(adf_path),
             "infout": _file_fingerprint(infout_path),
-            "fluent_log": _file_fingerprint(log_path),
+            "fluent_log": _file_fingerprint(log_path) if load_convergence else {'skipped': True},
         },
     }
 
@@ -410,7 +407,10 @@ def _build_update_plan(normalized: List[Dict[str, Any]], cache_dir: Path, force:
     for cfg in normalized:
         for polar_number in cfg["polars"]:
             source = _polar_source_info(cfg, polar_number)
-            cache_file = polar_cache_dir / f"{_cache_slug(cfg['base_directory'], cfg['label'], source['polar_name'])}.pkl"
+            cache_parts = [cfg['base_directory'], cfg['label'], source['polar_name']]
+            if not cfg.get('load_convergence', True):
+                cache_parts.append('reference_only')
+            cache_file = polar_cache_dir / f"{_cache_slug(*cache_parts)}.pkl"
             cached = None if force else _load_pickle(cache_file)
             if force:
                 action = "rebuild"
@@ -426,6 +426,7 @@ def _build_update_plan(normalized: List[Dict[str, Any]], cache_dir: Path, force:
 
 def _drag_rise_incremental(normalized: List[Dict[str, Any]], cache_dir: Path, force: bool, job_id: str) -> tuple[Dict[str, Any], Dict[str, int]]:
     normalized = [dict(cfg, drag_rise_dir=folder) for cfg in normalized
+                  if cfg.get('load_drag_rise', True)
                   for folder in cfg.get('drag_rise_dirs', [cfg.get('drag_rise_dir')]) if folder]
     curves: List[Dict[str, Any]] = []
     counts = {"new": 0, "modified": 0, "cached": 0}
@@ -482,6 +483,7 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
     try:
         _set_job(job_id, status="running", percent=2, phase="Validating configuration", message="Resolving JAMAL base folders and selected POLARs.")
         normalized = _normalize_configurations(payload)
+        load_options = {name: normalized[0][name] for name in LOAD_OPTION_NAMES}
         force = bool(payload.get("force_full_rebuild"))
         output_dir = output_directory(normalized)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -489,6 +491,9 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         _set_job(job_id, output_directory=str(output_dir), cache_directory=str(cache_dir))
         _job_log(job_id, f"Output directory: {output_dir}\nCache directory: {cache_dir}")
+        _job_log(job_id, 'Optional data · ' + ' · '.join(
+            f'{name.removeprefix("load_").replace("_", " ")}={"load" if enabled else "skip"}'
+            for name, enabled in load_options.items()))
 
         _set_job(job_id, percent=7, phase="Building update plan", message="Checking selected source timestamps against the persistent cache.")
         plan = _build_update_plan(normalized, cache_dir, force)
@@ -520,7 +525,9 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
                 with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
                     df = ENGINE.read_polar_file(source["adf_path"])
                     sweep_var = ENGINE.detect_sweep_variable(df)
-                    summary, rows, polar_history = ENGINE.process_optional_convergence(cfg["label"], source["polar_name"], source["run_dir"])
+                    summary, rows, polar_history = ENGINE.process_optional_convergence(
+                        cfg["label"], source["polar_name"], source["run_dir"],
+                        load_convergence=cfg['load_convergence'])
                 text = buffer.getvalue().strip()
                 if text:
                     _job_log(job_id, text)
@@ -546,14 +553,26 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
 
         finish_phase("polars")
 
-        _set_job(job_id, percent=73, phase="Processing drag rise", message="Loading only new or modified drag-rise files.")
-        drag_rise_data, drag_counts = _drag_rise_incremental(normalized, cache_dir, force, job_id)
+        _set_job(job_id, percent=73, phase="Processing drag rise", message=(
+            "Loading only new or modified drag-rise files." if load_options['load_drag_rise'] else "Skipped by launcher selection."))
+        if load_options['load_drag_rise']:
+            drag_rise_data, drag_counts = _drag_rise_incremental(normalized, cache_dir, force, job_id)
+        else:
+            drag_rise_data, drag_counts = {'curves': [], 'skipped': True}, {'new': 0, 'modified': 0, 'cached': 0}
         finish_phase("drag_rise")
 
-        _set_job(job_id, percent=78, phase="Processing distributions", message="Reading selected components and changed distribution files.")
-        distribution_data = ENGINE.jamal_distributions.read_distributions(
-            normalized, summaries, ENGINE.parse_infout, cache_dir / 'distributions', force,
-            lambda message: _set_job(job_id, message=message))
+        _set_job(job_id, percent=78, phase="Processing distributions", message=(
+            "Reading selected components and changed distribution files." if load_options['load_distributions'] else "Skipped by launcher selection."))
+        if load_options['load_distributions']:
+            distribution_data = ENGINE.jamal_distributions.read_distributions(
+                normalized, summaries, ENGINE.parse_infout, cache_dir / 'distributions', force,
+                lambda message: _set_job(job_id, message=message))
+        else:
+            distribution_data = {'version': ENGINE.jamal_distributions.VERSION,
+                                 'station_tolerance': ENGINE.jamal_distributions.STATION_TOLERANCE,
+                                 'series': [], 'issues': [], 'sources': [],
+                                 'counts': {'parsed': 0, 'cached': 0}, 'topology_cache': {},
+                                 'timings_seconds': {}, 'skipped': True}
         finish_phase("distributions")
         _job_log(job_id, 'Distribution timings · ' + ' · '.join(
             f'{name.replace("_", " ")}={seconds:.3f}s'
@@ -569,6 +588,7 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         conv_rows = ENGINE.add_neighbor_consistency(conv_rows)
         case_configs = [ENGINE.CaseConfig(label=cfg["label"], directory=Path(cfg["adf_directory"]), polars=cfg["polars"], drag_rise_dir=cfg.get("drag_rise_dir"), drag_rise_dirs=cfg.get('drag_rise_dirs')) for cfg in normalized]
         provenance = ENGINE.build_provenance(case_configs, summaries, adf_data, drag_rise_data)
+        provenance['load_options'] = load_options
         integrity_checks = ENGINE.build_integrity_checks(case_configs, summaries, conv_rows, adf_data, drag_rise_data)
         if distribution_data['issues']:
             integrity_checks = [row for row in integrity_checks if row['severity'] != 'PASS'] + distribution_data['issues']
@@ -595,6 +615,7 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
         finish_phase("publish")
 
         manifest = {
+            "load_options": load_options,
             "cache_schema": CACHE_SCHEMA_VERSION,
             "engine_version": getattr(ENGINE, "SCRIPT_VERSION", None),
             "generated_at": time.time(),
@@ -616,6 +637,7 @@ def _run_generation_job(job_id: str, payload: Dict[str, Any]) -> None:
 
         elapsed = time.perf_counter() - started
         result = {
+            "load_options": load_options,
             "report_path": str(html_path), "json_path": str(json_path), "report_url": "/report",
             "configurations": normalized, "parsed_polars": parsed_count, "reused_polars": reused_count,
             "drag_rise": drag_counts, "elapsed_seconds": elapsed, "plan": plan_counts,
@@ -833,11 +855,13 @@ input[type="text"] { width:100%; }
   </div>
 
   <div class="panel">
-    <div class="field"><label for="outputDirectory">Dashboard output directory (optional)</label>
-      <div class="path-row" style="grid-template-columns:1fr auto"><input id="outputDirectory" placeholder="C:\JAMAL\Reports\Project" oninput="persistDraft()">
-      <button onclick="browseOutputDirectory()">Browse</button></div>
+    <strong>Optional plot data</strong>
+    <div class="toolbar" style="margin-top:10px;margin-bottom:8px">
+      <label><input id="loadDistributions" type="checkbox" checked onchange="loadingOptionsChanged()"> Load Cp and loads distributions</label>
+      <label><input id="loadConvergence" type="checkbox" checked onchange="loadingOptionsChanged()"> Load Fluent logs for Convergence</label>
+      <label><input id="loadDragRise" type="checkbox" checked onchange="loadingOptionsChanged()"> Load drag-rise files</label>
     </div>
-    <p class="progress-plan">Choose a local folder to keep generated reports and their cache on this computer. Leave blank to use the first configuration's 03-RESULTS\DASHBOARD folder.</p>
+    <p class="progress-plan">Unchecked groups are skipped during generation. Selected ADF polars and required infout reference data are still loaded. Reports and cache use the first configuration's 03-RESULTS/DASHBOARD folder.</p>
     <div id="outputPaths" class="progress-plan" style="white-space:pre-wrap;overflow-wrap:anywhere"></div>
   </div>
 
@@ -848,6 +872,8 @@ input[type="text"] { width:100%; }
 const MAX_CONFIGS = 5;
 let nextId = 1;
 const configs = new Map();
+let startupToken = null;
+let applyingSetup = false;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -866,10 +892,10 @@ function configCard(id, data={}) {
   return `<section class="config-card" id="card-${id}">
     <div class="config-head"><h2>Configuration ${id}</h2><button class="danger" onclick="removeConfiguration(${id})">Remove</button></div>
     <div class="grid">
-      <div class="field"><label>Label</label><input id="label-${id}" value="${esc(label)}"></div>
+      <div class="field"><label>Label</label><input id="label-${id}" value="${esc(label)}" oninput="persistDraft()"></div>
       <div class="field"><label for="dist-input-${id}">Distribution file values</label><select id="dist-input-${id}" onchange="persistDraft()"><option value="pressure" ${data.distribution_input!=='cp'?'selected':''}>Absolute pressure [Pa]</option><option value="cp" ${data.distribution_input==='cp'?'selected':''}>Legacy Cp (already normalized)</option></select></div>
       <div class="field"><label>JAMAL base directory</label>
-        <div class="path-row"><input id="path-${id}" value="${esc(data.base_directory||data.directory||'')}" placeholder="Z:\\...\\CFD">
+        <div class="path-row"><input id="path-${id}" value="${esc(data.base_directory||data.directory||'')}" placeholder="/path/to/JAMAL" oninput="persistDraft()">
         <button onclick="browseDirectory(${id})">Browse</button><button onclick="scanDirectory(${id})">Scan</button></div>
       </div>
     </div>
@@ -878,18 +904,19 @@ function configCard(id, data={}) {
       <div class="polar-toolbar"><strong>Available POLARs</strong><button onclick="setAllPolars(${id},true)">Select all</button><button onclick="setAllPolars(${id},false)">Clear</button><span id="count-${id}"></span></div>
       <div class="polar-list" id="polars-${id}"></div>
       <div class="options-row">
-        <div class="field"><label>Optional drag-rise folders (Ctrl-click to select several)</label><select id="drag-${id}" multiple size="4"></select></div>
+        <div class="field"><label>Optional drag-rise folders (Ctrl-click to select several)</label><select id="drag-${id}" multiple size="4" onchange="persistDraft()"></select></div>
         <div class="field"><label>Scan summary</label><div id="summary-${id}" class="meta-item"></div></div>
       </div>
     </div>
   </section>`;
 }
-function addConfiguration(data={}) {
+async function addConfiguration(data={}) {
   if (configs.size >= MAX_CONFIGS) { alert(`Maximum ${MAX_CONFIGS} configurations.`); return; }
   const id = nextId++;
-  configs.set(id, {scan:null});
+  configs.set(id, {scan:null,dragScanned:false,dragSelections:data.drag_rise_dirs || (data.drag_rise_dir ? [data.drag_rise_dir] : [])});
   document.getElementById('configs').insertAdjacentHTML('beforeend', configCard(id,data));
-  if (data.base_directory || data.directory) scanDirectory(id, data.polars || null, data.drag_rise_dirs || (data.drag_rise_dir ? [data.drag_rise_dir] : []));
+  updateLoadingControls();
+  if (data.base_directory || data.directory) await scanDirectory(id, data.polars || null, configs.get(id).dragSelections);
   persistDraft();
 }
 function removeConfiguration(id) {
@@ -910,53 +937,93 @@ async function browseDirectory(id) {
     else setStatus('Folder selection cancelled.');
   } catch (error) { setStatus(`Browse error: ${error.message}`); }
 }
-async function browseOutputDirectory() {
-  try {
-    const data=await postJson('/api/browse',{initial_directory:document.getElementById('outputDirectory').value,purpose:'output'});
-    if(data.path){document.getElementById('outputDirectory').value=data.path;persistDraft();}
-  } catch(error){setStatus(`Browse error: ${error.message}`);}
-}
 function updateOutputPaths(output, cache) {
   if(!output){
-    output=document.getElementById('outputDirectory').value.trim();
-    if(!output){
-      const first=configs.keys().next().value;
-      const base=first ? document.getElementById(`path-${first}`).value.trim() : '';
-      output=base ? `${base.replace(/[\\/]+$/,'')}/03-RESULTS/DASHBOARD` : '';
-    }
+    const first=configs.keys().next().value;
+    const base=first ? document.getElementById(`path-${first}`).value.trim() : '';
+    output=base ? `${base.replace(/[\\/]+$/,'')}/03-RESULTS/DASHBOARD` : '';
   }
   document.getElementById('outputPaths').textContent=output ? `Output: ${output}\nCache: ${cache||`${output.replace(/[\\/]+$/,'')}/.jamal_cache`}` : 'Output and cache paths will appear after selecting a base directory.';
 }
 async function scanDirectory(id, restorePolars=null, restoreDrag='') {
+  const config=configs.get(id);
+  if(!config) return;
   const path = document.getElementById(`path-${id}`).value.trim();
   if (!path) { alert('Enter or browse to a directory.'); return; }
+  const request={token:(config.scanToken||0)+1,path,loadDragRise:document.getElementById('loadDragRise').checked,
+    polars:restorePolars===null?null:[...restorePolars],
+    drag:[...(Array.isArray(restoreDrag)?restoreDrag:restoreDrag?[restoreDrag]:selectedDrag(id))]};
+  config.scanToken=request.token;
+  config.pendingScan=request;
+  const isCurrent=()=>configs.get(id)===config && config.scanToken===request.token && document.getElementById(`path-${id}`).value.trim()===path;
   try {
     setStatus(`Phase 1 · Fast shallow discovery for configuration ${id}...`);
-    const data = await postJson('/api/scan',{base_directory:path});
-    configs.get(id).scan=data;
+    const loadDragRise=request.loadDragRise;
+    const data = await postJson('/api/scan',{base_directory:path,load_drag_rise:loadDragRise});
+    if(!isCurrent()) return;
+    if(loadDragRise!==document.getElementById('loadDragRise').checked) return await scanDirectory(id,request.polars,request.drag);
+    config.scan=data;
+    config.dragScanned=loadDragRise;
+    config.dragSelections=request.drag;
     document.getElementById(`path-${id}`).value=data.base_directory;
     document.getElementById(`scan-${id}`).style.display='block';
     document.getElementById(`meta-${id}`).innerHTML=[
       ['Base',data.base_directory],['ADF',data.adf_directory],['02-RUNS',data.runs_directory],['DRAG-RISE',data.drag_rise_root]
     ].map(v=>`<div class="meta-item"><strong>${v[0]}:</strong> ${esc(v[1])}</div>`).join('');
-    const wanted = restorePolars ? new Set(restorePolars.map(Number)) : new Set(data.polars.map(p=>p.number));
+    const wanted = request.polars!==null ? new Set(request.polars.map(Number)) : new Set(data.polars.map(p=>p.number));
     document.getElementById(`polars-${id}`).innerHTML=data.polars.map(p=>{
       return `<label class="polar-option"><input type="checkbox" class="polar-check-${id}" value="${p.number}" ${wanted.has(p.number)?'checked':''} onchange="updateCount(${id})"><strong>${p.name}</strong></label>`;
     }).join('') || '<div>No POLAR-XXX.adf files found directly inside 03-RESULTS/ADF.</div>';
     const drag=document.getElementById(`drag-${id}`);
     drag.innerHTML=data.drag_rise_directories.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
-    const wantedDrag = new Set(Array.isArray(restoreDrag)?restoreDrag:restoreDrag?[restoreDrag]:[]);
-    Array.from(drag.options).forEach(option=>option.selected=wantedDrag.has(option.value));
-    document.getElementById(`summary-${id}`).textContent=`Fast discovery: ${data.polars.length} root ADF POLAR files · ${data.drag_rise_directories.length} drag-rise folders · 02-RUNS checked only during generation`;
+    const selectedDragNames=new Set(request.drag);
+    Array.from(drag.options).forEach(option=>option.selected=selectedDragNames.has(option.value));
+    updateLoadingControls();
+    document.getElementById(`summary-${id}`).textContent=`Fast discovery: ${data.polars.length} root ADF POLAR files · ${loadDragRise?`${data.drag_rise_directories.length} drag-rise folders`:'drag-rise skipped'} · 02-RUNS checked only during generation`;
     updateCount(id); setStatus(`Phase 1 complete: ${data.polars.length} POLAR files found in ${data.adf_directory}. No recursive scan and no run validation performed.`); persistDraft();
-  } catch (error) { setStatus(`Scan error: ${error.message}`); }
+  } catch (error) { if(isCurrent()) setStatus(`Scan error: ${error.message}`); }
+  finally { if(config.pendingScan===request) config.pendingScan=null; }
 }
 function setAllPolars(id, checked) { document.querySelectorAll(`.polar-check-${id}`).forEach(el=>el.checked=checked); updateCount(id); }
-function selectedPolars(id) { return [...document.querySelectorAll(`.polar-check-${id}:checked`)].map(el=>Number(el.value)); }
+function selectedPolars(id) {
+  const config=configs.get(id);
+  const pendingPolars=config?.pendingScan?.polars;
+  if(!config?.scan && Array.isArray(pendingPolars)) return pendingPolars.map(Number);
+  return [...document.querySelectorAll(`.polar-check-${id}:checked`)].map(el=>Number(el.value));
+}
+function selectedDrag(id) {
+  const config=configs.get(id);
+  return config?.dragScanned ? Array.from(document.getElementById(`drag-${id}`)?.selectedOptions||[]).map(option=>option.value) : config?.pendingScan?.drag||config?.dragSelections||[];
+}
+function loadingOptions() {
+  return {load_distributions:document.getElementById('loadDistributions').checked,load_convergence:document.getElementById('loadConvergence').checked,load_drag_rise:document.getElementById('loadDragRise').checked};
+}
+function updateLoadingControls() {
+  const options=loadingOptions();
+  for(const id of configs.keys()){
+    document.getElementById(`dist-input-${id}`).disabled=!options.load_distributions;
+    document.getElementById(`drag-${id}`).disabled=!options.load_drag_rise;
+  }
+}
+async function loadingOptionsChanged() {
+  updateLoadingControls();
+  persistDraft();
+  const loadDragRise=document.getElementById('loadDragRise').checked;
+  const scans=[];
+  for(const [id,config] of configs){
+    const pending=config.pendingScan;
+    if(pending && pending.loadDragRise!==loadDragRise){
+      scans.push(scanDirectory(id,pending.polars,pending.drag));
+    } else if(loadDragRise && config.scan && !config.dragScanned && !pending){
+      scans.push(scanDirectory(id,selectedPolars(id),selectedDrag(id)));
+    }
+  }
+  await Promise.all(scans);
+}
 function updateCount(id) { const n=selectedPolars(id).length; document.getElementById(`count-${id}`).textContent=`${n} selected`; persistDraft(); }
 function serializeSetup() {
-  return {version:'v25',output_directory:document.getElementById('outputDirectory').value.trim(),configurations:[...configs.keys()].map(id=>({
-    label:document.getElementById(`label-${id}`).value.trim(),base_directory:document.getElementById(`path-${id}`).value.trim(),polars:selectedPolars(id),drag_rise_dirs:Array.from(document.getElementById(`drag-${id}`)?.selectedOptions||[]).map(option=>option.value),distribution_input:document.getElementById(`dist-input-${id}`).value
+  return {version:'v25',...loadingOptions(),configurations:[...configs.keys()].map(id=>({
+    label:document.getElementById(`label-${id}`).value.trim(),base_directory:document.getElementById(`path-${id}`).value.trim(),polars:selectedPolars(id),drag_rise_dirs:selectedDrag(id),distribution_input:document.getElementById(`dist-input-${id}`).value
   }))};
 }
 function saveSetup() {
@@ -969,13 +1036,15 @@ async function loadSetupFile(event) {
   event.target.value='';
 }
 async function applySetup(payload) {
+  applyingSetup=true;
   document.getElementById('configs').innerHTML=''; configs.clear(); nextId=1;
-  document.getElementById('outputDirectory').value=payload.output_directory||'';
+  for(const [key,id] of [['load_distributions','loadDistributions'],['load_convergence','loadConvergence'],['load_drag_rise','loadDragRise']]) document.getElementById(id).checked=payload[key]!==false;
   const list=(payload.configurations||[]).slice(0,MAX_CONFIGS); if(!list.length) list.push({label:'Baseline'});
-  for (const item of list) addConfiguration(item);
+  try { await Promise.all(list.map(item=>addConfiguration(item))); }
+  finally { applyingSetup=false; }
   persistDraft();
 }
-function persistDraft() { updateOutputPaths(); try { localStorage.setItem('JAMAL_v25_source_setup',JSON.stringify(serializeSetup())); } catch (_) {} }
+function persistDraft() { updateOutputPaths(); if(applyingSetup || !startupToken) return; try { localStorage.setItem('JAMAL_v25_source_setup',JSON.stringify({...serializeSetup(),startup_token:startupToken})); } catch (_) {} }
 function restoreDraft() { try { const text=localStorage.getItem('JAMAL_v25_source_setup'); if(text) return JSON.parse(text); } catch (_) {} return null; }
 let activeJobId = null;
 let progressTimer = null;
@@ -1042,10 +1111,21 @@ async function clearDashboardCache() {
 
 async function openOutputFolder(){ try{await postJson('/api/open-output');}catch(error){alert(error.message);} }
 window.addEventListener('beforeunload',persistDraft);
-const draft=restoreDraft(); if(draft) applySetup(draft); else addConfiguration({label:'Baseline'});
-fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(state=>{
-  if(state.active_job_id && !activeJobId){activeJobId=state.active_job_id;document.getElementById('generateButton').disabled=true;pollGenerationJob();}
-}).catch(()=>{});
+async function initializeLauncher() {
+  try {
+    const response=await fetch('/api/state',{cache:'no-store'});
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const state=await response.json();
+    startupToken=state.startup_token;
+    const draft=restoreDraft();
+    await applySetup(draft?.startup_token===startupToken ? draft : state.startup_setup||{});
+    if(state.active_job_id && !activeJobId){activeJobId=state.active_job_id;document.getElementById('generateButton').disabled=true;pollGenerationJob();}
+  } catch(error){
+    if(!configs.size) await addConfiguration({label:'Baseline'});
+    setStatus(`Launcher startup could not be loaded: ${error.message}. Refresh to retry.`);
+  }
+}
+initializeLauncher();
 </script>
 </body>
 </html>'''
@@ -1097,6 +1177,8 @@ class JamalRequestHandler(BaseHTTPRequestHandler):
                 "last_report": str(STATE["last_report"]) if STATE.get("last_report") else None,
                 "last_log": STATE.get("last_log", ""),
                 "last_error": STATE.get("last_error"),
+                "startup_token": STATE["startup_token"],
+                "startup_setup": STATE["startup_setup"],
             })
             return
         if path == "/api/progress":
@@ -1118,11 +1200,12 @@ class JamalRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if path == "/api/browse":
-                selected = choose_directory(payload.get("initial_directory"), output=payload.get("purpose") == "output")
+                selected = choose_directory(payload.get("initial_directory"))
                 self._json({"path": selected})
                 return
             if path == "/api/scan":
-                self._json(scan_base_directory(str(payload.get("base_directory") or payload.get("directory") or "")))
+                self._json(scan_base_directory(str(payload.get("base_directory") or payload.get("directory") or ""),
+                                               load_drag_rise=payload.get("load_drag_rise", True)))
                 return
             if path == "/api/generate":
                 self._json({"job_id": start_generation_job(payload)})
@@ -1156,12 +1239,51 @@ def find_free_port(host: str, preferred: int) -> int:
         return int(sock.getsockname()[1])
 
 
+def parse_startup_configurations(arguments: List[str], cwd: Optional[Path] = None) -> List[Dict[str, str]]:
+    """Build the initial form without inspecting CFD files or opening Tk."""
+    launching_directory = Path(cwd) if cwd is not None else Path.cwd()
+    if not arguments:
+        pairs = [("Baseline", str(launching_directory))]
+    elif len(arguments) == 1:
+        pairs = [("Baseline", arguments[0])]
+    elif len(arguments) % 2:
+        raise ValueError("Provide LABEL PATH pairs, for example: baseline '/path/to/base' config_2 '/path/to/base2'.")
+    else:
+        pairs = list(zip(arguments[::2], arguments[1::2]))
+    if len(pairs) > MAX_CONFIGURATIONS:
+        raise ValueError(f"A maximum of {MAX_CONFIGURATIONS} configurations is supported.")
+    configurations = []
+    labels = set()
+    for raw_label, raw_path in pairs:
+        label = raw_label.strip()
+        if not label or '|' in label:
+            raise ValueError("Configuration labels must be non-empty and cannot contain '|'.")
+        if label.casefold() in labels:
+            raise ValueError(f"Duplicate configuration label: {label}. Choose a unique label.")
+        labels.add(label.casefold())
+        if not raw_path.strip():
+            raise ValueError(f"{label}: JAMAL base directory is empty.")
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = launching_directory / path
+        configurations.append({"label": label, "base_directory": os.path.abspath(path)})
+    return configurations
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Launch the local JAMAL two-phase data-source dashboard.")
     parser.add_argument("--host", default="127.0.0.1", help="Local bind address.")
     parser.add_argument("--port", type=int, default=8765, help="Preferred local port.")
     parser.add_argument("--no-browser", action="store_true", help="Do not open the browser automatically.")
-    args = parser.parse_args()
+    parser.add_argument("configurations", nargs="*", metavar="LABEL PATH",
+                        help="Up to five LABEL PATH pairs. One PATH uses Baseline; no arguments use the launching directory.")
+    args = parser.parse_intermixed_args()
+    try:
+        initial_configurations = parse_startup_configurations(args.configurations)
+    except ValueError as exc:
+        parser.error(str(exc))
+    STATE["startup_token"] = uuid.uuid4().hex
+    STATE["startup_setup"] = {"configurations": initial_configurations}
 
     port = find_free_port(args.host, args.port)
     url = f"http://{args.host}:{port}/"
@@ -1170,6 +1292,8 @@ def main() -> None:
     print(f"JAMAL local dashboard {APP_VERSION}")
     print(f"Engine: {ENGINE_FILENAME}")
     print(f"Open: {url}")
+    for configuration in initial_configurations:
+        print(f"Configuration: {configuration['label']} | {configuration['base_directory']}")
     print("Press Ctrl+C to stop the server.")
 
     if not args.no_browser:

@@ -248,7 +248,7 @@ function distributionLoadsText(series, mode) {
     if(byId('distTargetMode').value!=='state') byId('distOverlays').textContent=`Target comparison: ${series.map(text).join(' | ')}`;
     byId('distTargetStatus').textContent=[...series.filter(s=>s.interpolation).map(s=>
       `${s.configuration} · ${s.polar}: ${s.interpolated?'Interpolated from':'Recorded'} state${s.source_states.length>1?'s':''} ${s.source_states.join(' / ')}${s.interpolated?`, weight ${s.interpolation.weight.toFixed(4)}`:''}.`),...targetErrors].join(' | ');
-    byId('distStatus').textContent = !data.length ? 'No distribution data found for the selected POLARs. Expected: 03-RESULTS/DISTCLCP/POLAR-XXX/<component>.' :
+    byId('distStatus').textContent = distributionData.skipped ? 'Cp and loads distributions were not loaded because they were unchecked in the launcher.' : !data.length ? 'No distribution data found for the selected POLARs. Expected: 03-RESULTS/DISTCLCP/POLAR-XXX/<component>.' :
       `${series.length} state(s) · ${groups.size} station plot(s) · ${curveCount} Cp curve(s). ${missingBref ? 'Missing positive span reference: choose dimensional Y. ' : ''}${curveCount ? '' : 'Select a station to show Cp. '}${(distributionData.issues||[]).length} distribution integrity warning(s).`;
     const unavailableLoads=series.filter(s=>!s.span.some(p=>Number.isFinite(p.cl)));
     if(unavailableLoads.length) byId('distStatus').textContent+=` Loads unavailable: ${unavailableLoads.map(s=>`${s.polar} / ${s.component}`).join(', ')}. See distribution integrity for the reason.`;

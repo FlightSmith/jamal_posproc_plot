@@ -1,4 +1,43 @@
-# Current approved update: v25.10.1 performance (2026-09-29)
+# Current approved update: v25.11 launcher inputs (2026-09-30)
+
+The user confirmed v25.10.1 improved speed, but the main fix was running Python
+on the Linux server alongside the CFD data. Network filesystem communication
+from the Windows client was the practical bottleneck. The user then authorized
+these launcher changes and commit/push, based on 1ca634d:
+
+- Remove the output-directory option. Reports/cache again always use the first
+  configuration's 03-RESULTS/DASHBOARD. Old saved output_directory fields are
+  ignored; output/cache paths remain visible read-only.
+- Accept positional LABEL PATH pairs (up to five), e.g. baseline "/data/base"
+  config_2 "/data/second base". Single PATH is also accepted with label Baseline.
+  No arguments uses the process launching directory, not the script directory.
+  Relative paths resolve against that launching directory. --host, --port and
+  --no-browser are retained and can be mixed with the pairs. No Tk is needed.
+- Prepopulate and shallow-scan the initial configurations. A new launcher process
+  overrides stale browser drafts with its startup inputs; refreshing the same
+  process restores current edits. Windows START_DASHBOARD.cmd forwards arguments
+  and preserves the caller's working directory.
+- Three global checked-by-default options load Cp/loads distributions, Fluent
+  convergence logs and drag-rise data. Choices persist in setups/drafts. Skipped
+  sources are not discovered/read or reused from cache; all eight combinations
+  are tested. Infout still supplies required references and case metadata even
+  with convergence off. Enabled and disabled convergence use separate caches.
+  Reports distinguish intentionally skipped data from missing files.
+
+112 tests pass, plus the independent screenshot validation (45,225 samples,
+75 sections, 21 targets, 104 hashes). Browser verification confirms both CLI
+configuration labels/paths appear immediately and the output selector is absent.
+Protected pressure integration, static margins, metadata references, performance
+optimizations, staging ACL inheritance and rollback remain unchanged. See
+jamal_dashboard/VALIDATION_v25_11.md. User's Linux environment is not available
+here; v25.11 validation ran on local Windows/Python 3.12. Real network-share ACL
+confirmation remains pending. Portable/offline work remains deferred. Unrelated
+local files and source fixtures remain untouched. Essential runtime package:
+JAMAL_Dashboard_v25.11_Real_Environment.zip (ten files, Linux/Windows instructions).
+Extracted-package on/off/on generation and actual CLI/HTTP startup from a different
+working directory passed; no script-folder fallback replaced the launching cwd.
+
+# Previous approved update: v25.10.1 performance (2026-09-29)
 
 User reports Generate / Update taking about 30–60 minutes for 21 states on a
 different computer, with inputs on a network share. The production folder is not
